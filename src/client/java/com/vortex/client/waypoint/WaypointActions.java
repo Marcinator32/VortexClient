@@ -1,0 +1,380 @@
+package com.vortex.client.waypoint;
+
+import com.mojang.blaze3d.platform.InputConstants;
+import com.vortex.client.core.ConfigManager;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import org.lwjgl.glfw.GLFW;
+import com.mojang.blaze3d.platform.InputConstants;
+
+/**
+ * Die Bedienung des Waypoint-Systems: Tastenbelegungen, Markieren von Bloecken
+ * und der automatische Todespunkt.
+ *
+ * Die Tasten werden direkt abgefragt (nicht ueber Minecrafts Tastensystem),
+ * damit sie im Client-Menue zugewiesen werden koennen wie alles andere auch.
+ * Jede Taste nutzt Flankenerkennung -- es zaehlt der Moment des Druckes, nicht
+ * das Halten.
+ */
+public final class WaypointActions {
+
+    private static boolean addDown, markDown, toggleDown, manageDown, areaDown;
+    private static int meldungTakt;
+
+    /** Erste Ecke einer Bereichsmarkierung (null = noch keine gesetzt). */
+    private static BlockPos areaCorner = null;
+    /** War der Spieler im letzten Tick noch am Leben? */
+    private static boolean wasAlive = true;
+
+    /**
+     * Marker, zu dem markierte Bloecke hinzugefuegt werden.
+     *
+     * So kann man mehrere Bloecke zu EINER benannten Gruppe zusammenfassen --
+     * etwa die drei Stellen, an denen bei einer Falle etwas gesetzt werden muss.
+     * Waehlbar in der Verwaltung; ohne Auswahl wird beim ersten Block eine neue
+     * Gruppe angelegt.
+     */
+    private static WaypointManager.Waypoint blockGroup = null;
+
+    /** Laeuft gerade eine Bereichsauswahl? (fuer den Hinweis im Bild) */
+    public static boolean hasPendingCorner() {
+        return areaCorner != null;
+    }
+
+    /** Aktive Block-Gruppe -- fuer den Hinweis im Bild. */
+    public static String activeGroupName() {
+        return (blockGroup == null) ? null : blockGroup.name;
+    }
+
+    public static void setBlockGroup(WaypointManager.Waypoint w) {
+        blockGroup = w;
+    }
+
+    public static WaypointManager.Waypoint getBlockGroup() {
+        return blockGroup;
+    }
+
+    private WaypointActions() {}
+
+    public static void register() {
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            try {
+                tick(client);
+            } catch (Throwable pvpErr) {
+                com.vortex.client.core.Errors.report("WaypointActions", pvpErr);
+            }
+        });
+    }
+
+    private static void tick(Minecraft client) {
+        if (client.player == null || client.level == null) {
+            wasAlive = true;
+            areaCorner = null;
+            blockGroup = null;
+            return;
+        }
+        WaypointSettings cfg = WaypointSettings.INSTANCE;
+        LocalPlayer self = client.player;
+
+        if (cfg.enabled.get() && (++meldungTakt % 20) == 0) {
+            WaypointWorlds.hier(client, false);
+            String neu = WaypointWorlds.meldungAbholen();
+            if (neu != null) info(client, neu);
+        }
+
+        boolean alive = self.isAlive();
+        if (cfg.deathWaypoint.get() && wasAlive && !alive) {
+            var alte = new java.util.ArrayList<WaypointManager.Waypoint>();
+            for (WaypointManager.Waypoint w : WaypointManager.all()) {
+                if (w.kind == WaypointManager.Kind.TOD) alte.add(w);
+            }
+            while (alte.size() >= 3) {
+                WaypointManager.remove(alte.remove(alte.size() - 1));
+            }
+            addWaypoint(client, self.getBlockX(), self.getBlockY(), self.getBlockZ(),
+                    "Death " + timeStamp(), WaypointManager.Kind.TOD, true);
+        }
+        wasAlive = alive;
+
+        if (client.gui.screen() != null) {
+            addDown = markDown = toggleDown = manageDown = false;
+            return;
+        }
+
+        boolean d = pressed(client, cfg.keyAddHere.getKeyCode());
+        if (d && !addDown) {
+            addWaypoint(client, self.getBlockX(), self.getBlockY(), self.getBlockZ(),
+                    null, WaypointManager.Kind.ALLGEMEIN, true);
+        }
+        addDown = d;
+
+        d = pressed(client, cfg.keyMarkBlock.getKeyCode());
+        if (d && !markDown) {
+            markLookedAtBlock(client);
+        }
+        markDown = d;
+
+        d = pressed(client, cfg.keyMarkArea.getKeyCode());
+        if (d && !areaDown) {
+            markArea(client);
+        }
+        areaDown = d;
+
+        d = pressed(client, cfg.keyToggle.getKeyCode());
+        if (d && !toggleDown) {
+            cfg.enabled.toggle();
+            info(client, cfg.enabled.get() ? "Waypoints on" : "Waypoints off");
+            ConfigManager.save();
+        }
+        toggleDown = d;
+
+        d = pressed(client, cfg.keyManage.getKeyCode());
+        if (d && !manageDown) {
+            client.gui.setScreen(new com.vortex.client.gui.WaypointScreen(null));
+        }
+        manageDown = d;
+    }
+
+    /** Taste gedrueckt? Nicht belegte Tasten zaehlen nie. */
+    private static boolean pressed(Minecraft client, int keyCode) {
+        if (keyCode == GLFW.GLFW_KEY_UNKNOWN) return false;
+        try {
+            return InputConstants.isKeyDown(client.getWindow(), keyCode);
+        } catch (Throwable pvpErr) {
+            return false;
+        }
+    }
+
+    /**
+     * Markiert den Block unter dem Fadenkreuz.
+     *
+     * Praktisch, um etwas Bestimmtes festzuhalten, ohne hinzulaufen -- etwa eine
+     * Kiste am anderen Ende der Halle oder einen Portal-Rahmen von weitem.
+     */
+    private static void markLookedAtBlock(Minecraft client) {
+        HitResult hit = client.hitResult;
+        if (hit == null || hit.getType() != HitResult.Type.BLOCK
+                || !(hit instanceof BlockHitResult bhr)) {
+            info(client, "No block in view.");
+            return;
+        }
+        BlockPos pos = bhr.getBlockPos();
+
+        if (blockGroup == null || !WaypointManager.all().contains(blockGroup)) {
+            blockGroup = findNearbyGroup(client, pos, 24);
+        }
+
+        if (blockGroup == null) {
+            String blockName;
+            try {
+                blockName = client.level.getBlockState(pos)
+                        .getBlock().getName().getString();
+            } catch (Throwable pvpErr) {
+                blockName = "Blocks";
+            }
+            blockGroup = addWaypoint(client, pos.getX(), pos.getY(), pos.getZ(),
+                    blockName, WaypointManager.Kind.BLOCK, false);
+            if (blockGroup == null) return;
+            blockGroup.blocks.add(pos);
+            ConfigManager.save();
+            info(client, "New block group \"" + blockGroup.name
+                    + "\" \u2014 further blocks go here. Rename it in the manager.");
+            return;
+        }
+
+        if (blockGroup.blocks.remove(pos)) {
+            ConfigManager.save();
+            info(client, "Block removed (" + blockGroup.blocks.size()
+                    + " in \"" + blockGroup.name + "\")");
+            return;
+        }
+        blockGroup.blocks.add(pos);
+        ConfigManager.save();
+        info(client, "Block marked (" + blockGroup.blocks.size()
+                + " in \"" + blockGroup.name + "\")");
+    }
+
+    /**
+     * Sucht eine Block-Gruppe in der Naehe, damit man nicht jedes Mal manuell
+     * eine auswaehlen muss.
+     */
+    private static WaypointManager.Waypoint findNearbyGroup(Minecraft client,
+                                                            BlockPos pos, int radius) {
+        var hier = WaypointWorlds.hier(client, false);
+        if (hier == null) return null;
+        WaypointManager.Waypoint best = null;
+        double bestSq = (double) radius * radius;
+        for (WaypointManager.Waypoint w : WaypointManager.all()) {
+            if (!WaypointManager.matches(w, hier)) continue;
+
+            if (w.blocks.isEmpty()) {
+                double dx = w.x - pos.getX();
+                double dy = w.y - pos.getY();
+                double dz = w.z - pos.getZ();
+                double sq = dx * dx + dy * dy + dz * dz;
+                if (sq < bestSq) {
+                    bestSq = sq;
+                    best = w;
+                }
+                continue;
+            }
+            for (BlockPos b : w.blocks) {
+                double dx = b.getX() - pos.getX();
+                double dy = b.getY() - pos.getY();
+                double dz = b.getZ() - pos.getZ();
+                double sq = dx * dx + dy * dy + dz * dz;
+                if (sq < bestSq) {
+                    bestSq = sq;
+                    best = w;
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Bereichsmarkierung: erster Druck merkt die Ecke, zweiter fuellt den
+     * gesamten Quader dazwischen in die Gruppe.
+     *
+     * So markiert man ein 4x4-Feld mit zwei Tastendruecken statt sechzehn --
+     * und ebenso eine ganze Wand oder einen Raum.
+     */
+    private static void markArea(Minecraft client) {
+        HitResult hit = client.hitResult;
+        if (hit == null || hit.getType() != HitResult.Type.BLOCK
+                || !(hit instanceof BlockHitResult bhr)) {
+            info(client, "No block in view.");
+            return;
+        }
+        BlockPos pos = bhr.getBlockPos();
+
+        if (areaCorner == null) {
+            areaCorner = pos;
+            info(client, "First corner set (" + pos.getX() + ", " + pos.getY()
+                    + ", " + pos.getZ() + ") \u2014 now pick the second one.");
+            return;
+        }
+
+        if (blockGroup == null || !WaypointManager.all().contains(blockGroup)) {
+            blockGroup = findNearbyGroup(client, pos, 24);
+        }
+        if (blockGroup == null) {
+            blockGroup = addWaypoint(client, pos.getX(), pos.getY(), pos.getZ(),
+                    "Area", WaypointManager.Kind.BLOCK, false);
+            if (blockGroup == null) { areaCorner = null; return; }
+        }
+
+        int x1 = Math.min(areaCorner.getX(), pos.getX());
+        int x2 = Math.max(areaCorner.getX(), pos.getX());
+        int y1 = Math.min(areaCorner.getY(), pos.getY());
+        int y2 = Math.max(areaCorner.getY(), pos.getY());
+        int z1 = Math.min(areaCorner.getZ(), pos.getZ());
+        int z2 = Math.max(areaCorner.getZ(), pos.getZ());
+
+        long total = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+        if (total > 512) {
+            info(client, "Area too large (" + total + " blocks, 512 max).");
+            areaCorner = null;
+            return;
+        }
+
+        int added = 0;
+        for (int x = x1; x <= x2; x++) {
+            for (int y = y1; y <= y2; y++) {
+                for (int z = z1; z <= z2; z++) {
+                    BlockPos bp = new BlockPos(x, y, z);
+                    if (!blockGroup.blocks.contains(bp)) {
+                        blockGroup.blocks.add(bp);
+                        added++;
+                    }
+                }
+            }
+        }
+        areaCorner = null;
+        ConfigManager.save();
+        info(client, added + " blocks marked (" + blockGroup.blocks.size()
+                + " in \"" + blockGroup.name + "\")");
+    }
+
+    /** Legt einen Marker an und meldet es im Chat. */
+    public static WaypointManager.Waypoint addWaypoint(Minecraft client,
+                                                       int x, int y, int z,
+                                                       String name,
+                                                       WaypointManager.Kind kind,
+                                                       boolean announce) {
+        var hier = WaypointWorlds.hier(client, true);
+        if (hier == null) return null;
+        String finalName = (name == null || name.isBlank())
+                ? (kind.label + " " + (WaypointManager.anzahlIn(hier.welt().id) + 1))
+                : name;
+        WaypointManager.Waypoint w =
+                WaypointManager.add(finalName, x, y, z, hier.welt().id, hier.dim(), kind);
+        ConfigManager.save();
+        if (announce) {
+            info(client, "Marker added: " + finalName + "  ("
+                    + x + ", " + y + ", " + z + ")");
+        }
+        return w;
+    }
+
+    /**
+     * Rechnet einen Marker zwischen Oberwelt und Nether um (Faktor 8) und legt
+     * das Gegenstueck an.
+     *
+     * Beim Portalbau spart das die Kopfrechnerei -- und beim Base-Hunting findet
+     * man so die Stelle im Nether, die zu einer Basis in der Oberwelt gehoert.
+     */
+    public static WaypointManager.Waypoint createCounterpart(Minecraft client,
+                                                             WaypointManager.Waypoint w) {
+        boolean fromNether = w.dim != null && w.dim.contains("nether");
+        int nx, nz;
+        String targetDim;
+        if (fromNether) {
+            nx = w.x * 8;
+            nz = w.z * 8;
+            targetDim = "minecraft:overworld";
+        } else {
+            nx = Math.floorDiv(w.x, 8);
+            nz = Math.floorDiv(w.z, 8);
+            targetDim = "minecraft:the_nether";
+        }
+        WaypointManager.Waypoint c = WaypointManager.add(
+                w.name + (fromNether ? " (Overworld)" : " (Nether)"),
+                nx, w.y, nz, w.welt, targetDim, WaypointManager.Kind.PORTAL);
+        c.color = w.color;
+        c.symbol = w.symbol;
+        ConfigManager.save();
+        info(client, "Counterpart created: " + nx + ", " + w.y + ", " + nz);
+        return c;
+    }
+
+    /** Koordinaten in die Zwischenablage legen. */
+    public static void copyToClipboard(Minecraft client,
+                                       WaypointManager.Waypoint w) {
+        try {
+            client.keyboardHandler.setClipboard(w.x + " " + w.y + " " + w.z);
+            info(client, "Coordinates copied.");
+        } catch (Throwable pvpErr) {
+            com.vortex.client.core.Errors.report("WaypointActions.clipboard", pvpErr);
+        }
+    }
+
+    private static String timeStamp() {
+        java.time.LocalTime t = java.time.LocalTime.now();
+        return String.format(java.util.Locale.ROOT, "%02d:%02d", t.getHour(), t.getMinute());
+    }
+
+    private static void info(Minecraft client, String msg) {
+        if (client.player == null) return;
+        try {
+            client.player.sendSystemMessage(Component.literal("[Waypoints] " + msg));
+        } catch (Throwable pvpErr) {
+            com.vortex.client.core.Errors.report("WaypointActions.info", pvpErr);
+        }
+    }
+}

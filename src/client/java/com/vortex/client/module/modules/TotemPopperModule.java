@@ -1,0 +1,75 @@
+package com.vortex.client.module.modules;
+
+import com.vortex.client.core.setting.BooleanSetting;
+import com.vortex.client.core.setting.ColorSetting;
+import com.vortex.client.core.setting.NumberSetting;
+import com.vortex.client.hud.HudElement;
+import com.vortex.client.module.Module;
+
+/**
+ * Totem-Zaehler: zeigt an, wie viele Totems die Spieler in der Umgebung
+ * verbraucht haben.
+ *
+ * Im Kampf die vielleicht nuetzlichste Information ueberhaupt -- wer gerade sein
+ * letztes Totem gezogen hat, ist angreifbar. Gezaehlt werden nur Ereignisse, die
+ * der Server ohnehin an alle Umstehenden schickt (fuer die Totem-Animation).
+ */
+public class TotemPopperModule extends Module implements HudElement {
+
+    public final NumberSetting x = new NumberSetting("X", 4, 0, 1920, 1);
+    public final NumberSetting y = new NumberSetting("Y", 60, 0, 1080, 1);
+    public final ColorSetting color = new ColorSetting("Text Color", 0xFFFFFFFF);
+    public final NumberSetting scale = new NumberSetting("Scale", 1.0, 0.5, 3.0, 0.1);
+
+    /** Wie viele Spieler hoechstens aufgelistet werden. */
+    public final NumberSetting maxEntries = new NumberSetting("Max Entries", 5, 1, 15, 1);
+
+    /** Frisch verbrauchte Totems kurz hervorheben. */
+    public final BooleanSetting highlight = new BooleanSetting("Highlight New", true);
+    public final ColorSetting highlightColor = new ColorSetting("Highlight", 0xFFFF5555);
+
+    /**
+     * Show the count next to the player's name in the world, not just in the
+     * list. In a fight you are looking at the opponent, not at a corner of the
+     * screen — this is where the number is actually useful.
+     */
+    /**
+     * Show the list on screen.
+     *
+     * Separate from the overhead count on purpose: in a crowded fight the list
+     * gives the whole picture at a glance, while the overhead number tells you
+     * about the one person you are looking at. Both switch independently.
+     */
+    public final BooleanSetting showList = new BooleanSetting("Show List", true);
+
+    public final BooleanSetting overhead = new BooleanSetting("Show Above Players", true);
+
+    /** How far away the overhead count is still drawn. */
+    public final NumberSetting overheadRange = new NumberSetting("Overhead Range", 32, 8, 96, 4);
+
+    /** Aussehen: Schatten, Kasten, Rahmen, Beschriftung ... (4.6.0) */
+    public final com.vortex.client.hud.HudStyle style = new com.vortex.client.hud.HudStyle(false);
+
+    public TotemPopperModule() {
+        super("Totem Popper", Category.HUD);
+        addSetting(x);
+        addSetting(y);
+        addSetting(color);
+        addSetting(scale);
+        addSetting(maxEntries);
+        addSetting(highlight);
+        addSetting(highlightColor);
+        addSetting(showList);
+        addSetting(overhead);
+        addSetting(overheadRange);
+        style.addTo(this::addSetting);
+    }
+
+    @Override public String hudName() { return "Totem Popper"; }
+    @Override public NumberSetting hudX() { return x; }
+    @Override public NumberSetting hudY() { return y; }
+    @Override public NumberSetting hudScale() { return scale; }
+    @Override public ColorSetting hudColor() { return color; }
+    @Override public int hudWidth() { return style.breite((int) (110 * scale.get())); }
+    @Override public int hudHeight() { return style.hoehe((int) ((maxEntries.getInt() * 10 + 10) * scale.get())); }
+}

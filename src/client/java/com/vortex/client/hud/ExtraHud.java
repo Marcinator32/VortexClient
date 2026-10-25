@@ -1,0 +1,256 @@
+package com.vortex.client.hud;
+
+import com.vortex.client.module.ModuleManager;
+import com.vortex.client.module.modules.ClockModule;
+import com.vortex.client.module.modules.ComboModule;
+import com.vortex.client.module.modules.CompassModule;
+import com.vortex.client.module.modules.ReachModule;
+import com.vortex.client.module.modules.SpeedometerModule;
+import com.vortex.client.module.modules.TpsModule;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.network.chat.Component;
+
+/**
+ * Die HUD-Anzeigen aus 4.4.0: Tacho, Kompass, Reichweite, Combo, TPS, Uhr.
+ *
+ * Eigene Klasse statt noch mehr Zeilen im HudRenderer -- der ist schon lang
+ * genug. Gezeichnet wird ueber dieselbe Skalierungshilfe wie alle anderen
+ * Anzeigen, damit sich die neuen im HUD-Editor genauso verhalten.
+ *
+ * Texte werden nur neu gebaut, wenn sich der Inhalt aendert. Eine Anzeige,
+ * die 150-mal pro Sekunde denselben String neu zusammensetzt, kostet Speicher
+ * fuer nichts.
+ */
+public final class ExtraHud {
+
+    private ExtraHud() {}
+
+    private static final DateTimeFormatter H24 = DateTimeFormatter.ofPattern("HH:mm");
+    private static final DateTimeFormatter H12 = DateTimeFormatter.ofPattern("h:mm a", Locale.ROOT);
+
+    private static double vorX = Double.NaN, vorY, vorZ;
+    private static double tempo = 0;
+
+    public static void register() {
+        ClientTickEvents.END_CLIENT_TICK.register(mc -> {
+            if (mc.player == null) {
+                vorX = Double.NaN;
+                tempo = 0;
+                return;
+            }
+            SpeedometerModule sm = ModuleManager.INSTANCE.get(SpeedometerModule.class);
+            double px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
+            if (!Double.isNaN(vorX)) {
+                double dx = px - vorX, dz = pz - vorZ;
+                double dy = (sm != null && sm.vertical.get()) ? py - vorY : 0;
+                double proSek = Math.sqrt(dx * dx + dy * dy + dz * dz) * 20.0;
+                if (proSek > 400) proSek = tempo;
+                tempo += (proSek - tempo) * 0.5;
+            }
+            vorX = px;
+            vorY = py;
+            vorZ = pz;
+        });
+    }
+
+    public static void render(GuiGraphicsExtractor ctx, Minecraft mc) {
+        if (mc.player == null || mc.font == null) return;
+        tacho(ctx, mc);
+        kompass(ctx, mc);
+        reichweite(ctx, mc);
+        combo(ctx, mc);
+        tps(ctx, mc);
+        uhr(ctx, mc);
+        MaceHud.render(ctx, mc);
+        CooldownHud.render(ctx, mc);
+        InventoryHud.render(ctx, mc);
+        DamageNumbers.render(ctx, mc);
+        try { CombatFx.render(ctx, mc); } catch (Throwable e) { com.vortex.client.core.Errors.report("CombatFx.render", e); }
+        PearlTracker.render(ctx, mc);
+        try { ExplosionTimer.render(ctx, mc); } catch (Throwable e) { com.vortex.client.core.Errors.report("ExplosionTimer", e); }
+        try { LightOverlay.render(ctx, mc); } catch (Throwable e) { com.vortex.client.core.Errors.report("LightOverlay.hud", e); }
+    }
+
+    private static String tachoText = null;
+    private static int tachoWert = Integer.MIN_VALUE;
+
+    private static void tacho(GuiGraphicsExtractor ctx, Minecraft mc) {
+        SpeedometerModule m = ModuleManager.INSTANCE.get(SpeedometerModule.class);
+        if (m == null || !m.isEnabled()) return;
+        boolean kmh = m.unit.getIndex() == 1;
+        double wert = kmh ? tempo * 3.6 : tempo;
+        int schluessel = (int) Math.round(wert * 10) * 2 + (kmh ? 1 : 0);
+        if (schluessel != tachoWert || tachoText == null) {
+            tachoWert = schluessel;
+            tachoText = String.format(Locale.ROOT, "%.1f %s", wert, kmh ? "km/h" : "b/s");
+        }
+        HudText.zeile(ctx, mc.font, m.x.getInt(), m.y.getInt(), m.scale.getFloat(),
+                m.style, m.color, "Speed", tachoText, HudStyle.FORM_VALUE_ONLY);
+    }
+
+    private static final String[] RICHTUNG = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+
+    private static void kompass(GuiGraphicsExtractor ctx, Minecraft mc) {
+        CompassModule m = ModuleManager.INSTANCE.get(CompassModule.class);
+        if (m == null || !m.isEnabled()) return;
+        int w = m.width.getInt();
+        float sc = m.scale.getFloat();
+        int sw = mc.getWindow().getGuiScaledWidth();
+
+        if (m.centered.get()) {
+            double mitte = Math.max(0, Math.round((sw - w * sc) / 2.0));
+            if (!Double.isNaN(m.lastX) && Math.abs(m.x.get() - m.lastX) > 0.5) {
+                m.centered.set(false);
+            } else {
+                m.x.set(mitte);
+                m.lastX = mitte;
+            }
+        }
+
+        int x = m.x.getInt(), y = m.y.getInt();
+        HudRenderer.pushScale(ctx, x, y, sc);
+        boolean modern = HudKarte.modern(m.look);
+        int h = m.degrees.get() ? (modern ? 24 : 22) : (modern ? 16 : 14);
+        if (modern) {
+            if (m.background.get()) {
+                com.vortex.client.gui.glatt.Glatt.schatten(ctx, x, y + 1, w, h, HudKarte.radius() + 1, 3f, 0x66000000);
+                com.vortex.client.gui.glatt.Glatt.rund(ctx, x, y, w, h, HudKarte.radius(), 0xD114151B);
+            }
+        } else if (m.background.get()) {
+            ctx.fill(x, y, x + w, y + h, 0x70000000);
+        }
+
+        float kurs = ((mc.player.getYRot() + 180f) % 360f + 360f) % 360f;
+        float proGrad = w / 150f;
+        int mitteX = x + w / 2;
+        int farbe = m.color.get();
+        for (int grad = 0; grad < 360; grad += 15) {
+            float diff = ((grad - kurs) % 360f + 540f) % 360f - 180f;
+            float px = mitteX + diff * proGrad;
+            if (px < x + 4 || px > x + w - 4) continue;
+            float rand = 1f - Math.abs(diff) / 75f;
+            int alpha = (int) (255 * Math.max(0.15f, Math.min(1f, rand * 1.6f)));
+            int col = (alpha << 24) | (farbe & 0xFFFFFF);
+            int ix = (int) px;
+            if (grad % 45 == 0) {
+                String t = RICHTUNG[grad / 45];
+                if (modern) HudKarte.text(ctx, t, px - HudKarte.breite(t, true) / 2f, y + 4, col, true);
+                else {
+                    int tw = mc.font.width(t);
+                    ctx.text(mc.font, Component.literal(t), ix - tw / 2, y + 3, col);
+                }
+            } else if (modern) {
+                com.vortex.client.gui.glatt.Glatt.flaeche(ctx, px, y + 6, px + 0.5f, y + 10, (alpha / 2 << 24) | (farbe & 0xFFFFFF));
+            } else {
+                ctx.fill(ix, y + 4, ix + 1, y + 9, (alpha / 2 << 24) | (farbe & 0xFFFFFF));
+            }
+        }
+        int akz = m.accent.get() | 0xFF000000;
+        if (modern) {
+            com.vortex.client.gui.glatt.Glatt.rund(ctx, mitteX - 6, y + 1, 12, 1.5f, 0.75f, akz);
+            if (m.degrees.get()) {
+                String g = Math.round(kurs) % 360 + "\u00b0";
+                HudKarte.text(ctx, g, mitteX - HudKarte.breite(g, true) / 2f, y + 14, akz, true);
+            }
+            HudRenderer.popScale(ctx);
+            return;
+        }
+        ctx.fill(mitteX - 1, y, mitteX + 1, y + 2, akz);
+        ctx.fill(mitteX - 2, y, mitteX + 2, y + 1, akz);
+        if (m.degrees.get()) {
+            String g = String.valueOf(Math.round(kurs) % 360);
+            int gw = mc.font.width(g);
+            ctx.text(mc.font, Component.literal(g), mitteX - gw / 2, y + 12, akz);
+        }
+        HudRenderer.popScale(ctx);
+    }
+
+    private static void reichweite(GuiGraphicsExtractor ctx, Minecraft mc) {
+        ReachModule m = ModuleManager.INSTANCE.get(ReachModule.class);
+        if (m == null || !m.isEnabled()) return;
+        double r = CombatTracker.reichweite();
+        String text;
+        float alpha = 1f;
+        if (r < 0) {
+            text = "-- blocks";
+        } else {
+            long alter = CombatTracker.reichweiteAlter();
+            long grenze = (long) (m.hideAfter.get() * 1000);
+            if (grenze > 0 && alter > grenze + 400) return;
+            if (grenze > 0 && alter > grenze) alpha = 1f - (alter - grenze) / 400f;
+            text = String.format(Locale.ROOT, m.decimals.getIndex() == 1 ? "%.2f blocks" : "%.1f blocks", r);
+        }
+        HudText.zeile(ctx, mc.font, m.x.getInt(), m.y.getInt(), m.scale.getFloat(),
+                m.style, m.color, "Reach", text, HudStyle.FORM_VALUE_ONLY, 0, Math.max(0.03f, alpha));
+    }
+
+    private static void combo(GuiGraphicsExtractor ctx, Minecraft mc) {
+        ComboModule m = ModuleManager.INSTANCE.get(ComboModule.class);
+        if (m == null || !m.isEnabled()) return;
+        int c = CombatTracker.combo((long) (m.resetAfter.get() * 1000));
+        if (c == 0 && m.hideAtZero.get()) return;
+        long alter = CombatTracker.comboAlter();
+        int blitz = 0;
+        if (c > 0 && alter < 250) {
+            blitz = com.vortex.client.gui.VortexStyle.mix(0xFFFFFFFF, m.color.get(), alter / 250f);
+        }
+        HudText.zeile(ctx, mc.font, m.x.getInt(), m.y.getInt(), m.scale.getFloat(),
+                m.style, m.color, "Combo", c == 1 ? "1 hit" : c + " hits", HudStyle.FORM_VALUE_ONLY, blitz, 1f);
+    }
+
+    private static void tps(GuiGraphicsExtractor ctx, Minecraft mc) {
+        TpsModule m = ModuleManager.INSTANCE.get(TpsModule.class);
+        if (m == null || !m.isEnabled()) return;
+        float t = TickRate.tps();
+        String text = String.format(Locale.ROOT, "%.1f", t);
+        float seit = TickRate.seitLetztem();
+        if (m.lagTimer.get() && seit >= 2f) {
+            text += String.format(Locale.ROOT, "  (%.0fs)", seit);
+        }
+        int col = 0;
+        if (m.colorByValue.get()) {
+            if (seit >= 3f || t < 15f) col = 0xFFFF5555;
+            else if (t < 18f) col = 0xFFFFD050;
+            else col = 0xFF55FF7A;
+        }
+        HudText.zeile(ctx, mc.font, m.x.getInt(), m.y.getInt(), m.scale.getFloat(),
+                m.style, m.color, "TPS", text, HudStyle.FORM_LABEL_FIRST, col, 1f);
+    }
+
+    private static String uhrText = null;
+    private static long uhrGebaut = 0;
+
+    private static void uhr(GuiGraphicsExtractor ctx, Minecraft mc) {
+        ClockModule m = ModuleManager.INSTANCE.get(ClockModule.class);
+        if (m == null || !m.isEnabled()) return;
+        long jetzt = System.currentTimeMillis();
+        if (uhrText == null || jetzt - uhrGebaut > 500) {
+            uhrGebaut = jetzt;
+            StringBuilder sb = new StringBuilder();
+            if (m.showTime.get()) {
+                sb.append(LocalTime.now().format(m.format.getIndex() == 1 ? H12 : H24));
+            }
+            if (m.showDay.get() && mc.level != null) {
+                if (sb.length() > 0) sb.append("  ");
+                sb.append("Day ").append(mc.level.getLevelData().getGameTime() / 24000L + 1);
+            }
+            if (m.showMemory.get()) {
+                Runtime rt = Runtime.getRuntime();
+                long benutzt = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+                long max = rt.maxMemory() / (1024 * 1024);
+                if (sb.length() > 0) sb.append("  ");
+                sb.append(benutzt).append('/').append(max).append(" MB");
+            }
+            uhrText = sb.toString();
+        }
+        if (uhrText.isEmpty()) return;
+        HudText.zeile(ctx, mc.font, m.x.getInt(), m.y.getInt(), m.scale.getFloat(),
+                m.style, m.color, "Time", uhrText, HudStyle.FORM_VALUE_ONLY);
+    }
+
+}

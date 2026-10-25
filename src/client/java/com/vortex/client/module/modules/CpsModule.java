@@ -1,0 +1,53 @@
+package com.vortex.client.module.modules;
+
+import com.vortex.client.core.setting.ColorSetting;
+import com.vortex.client.core.setting.ModeSetting;
+import com.vortex.client.core.setting.NumberSetting;
+import com.vortex.client.hud.HudElement;
+import com.vortex.client.module.Module;
+
+/**
+ * CPS-Anzeige als Modul.
+ *
+ * Sieh dir an, wie wenig hier steht: nur die Settings. Die eigentliche
+ * Klick-Zaehlung lebt weiter in CpsCounter, das Zeichnen im HudRenderer.
+ * Das Modul ist nur der "Vertrag": Bin ich an? Wo? Welche Farbe?
+ */
+public class CpsModule extends Module implements HudElement {
+
+    public final NumberSetting x = new NumberSetting("X", 4, 0, 1920, 1);
+    public final NumberSetting y = new NumberSetting("Y", 4, 0, 1080, 1);
+    public final ColorSetting color = new ColorSetting("Text Color", 0xFFFFFFFF);
+    public final NumberSetting scale = new NumberSetting("Scale", 1.0, 0.5, 3.0, 0.1);
+
+    /**
+     * Which button is counted.
+     *
+     * "Both" shows the two numbers side by side rather than adding them up:
+     * a total would hide which hand is actually doing the work, and that is
+     * usually the thing you want to know.
+     */
+    public final ModeSetting mode = new ModeSetting("Count", 0, "Left", "Right", "Both");
+
+    /** Aussehen: Schatten, Kasten, Rahmen, Beschriftung ... (4.6.0) */
+    public final com.vortex.client.hud.HudStyle style = new com.vortex.client.hud.HudStyle(true);
+
+    public CpsModule() {
+        super("CPS", Category.HUD);
+        enabledByDefault();
+        addSetting(x);
+        addSetting(y);
+        addSetting(color);
+        addSetting(scale);
+        addSetting(mode);
+        style.addTo(this::addSetting);
+    }
+
+    @Override public String hudName() { return "CPS"; }
+    @Override public NumberSetting hudX() { return x; }
+    @Override public NumberSetting hudY() { return y; }
+    @Override public NumberSetting hudScale() { return scale; }
+    @Override public com.vortex.client.core.setting.ColorSetting hudColor() { return color; }
+    @Override public int hudWidth() { return style.breite(mode.getIndex() == 2 ? 84 : 50); }
+    @Override public int hudHeight() { return style.hoehe(12); }
+}

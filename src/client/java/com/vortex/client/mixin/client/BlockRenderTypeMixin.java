@@ -1,0 +1,48 @@
+package com.vortex.client.mixin.client;
+
+import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+/**
+ * Makes selected blocks invisible.
+ *
+ * Every block tells the game how it should be drawn, and INVISIBLE is a value
+ * the game already uses for things like barriers. Reporting that value for a
+ * chosen block means it is left out when the chunk mesh is built — so it costs
+ * nothing per frame, unlike skipping it while drawing.
+ *
+ * Only the appearance changes. The block still blocks movement, still takes the
+ * same time to break, and the server never learns about any of it.
+ *
+ * Blocks drawn by a block entity -- chests, signs, beds, shulker boxes -- do
+ * not go through this path at all. Those are handled by BlockEntityHideMixin,
+ * which hooks the renderer they do use.
+ */
+@Mixin(BlockBehaviour.BlockStateBase.class)
+public abstract class BlockRenderTypeMixin {
+
+    @Inject(method = "getRenderShape", at = @At("HEAD"), cancellable = true, require = 0)
+    private void vortex$hideSelectedBlocks(CallbackInfoReturnable<RenderShape> cir) {
+        try {
+            com.vortex.client.module.modules.NoRenderBlocksModule mod =
+                    com.vortex.client.module.ModuleManager.INSTANCE.get(
+                            com.vortex.client.module.modules.NoRenderBlocksModule.class);
+            if (mod == null || !mod.isEnabled()) return;
+            if (mod.getHiddenBlocks().isEmpty()) return;
+
+            BlockBehaviour.BlockStateBase self = (BlockBehaviour.BlockStateBase) (Object) this;
+            var id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(self.getBlock());
+            if (id == null) return;
+
+            if (mod.isHidden(id.toString())) {
+                cir.setReturnValue(RenderShape.INVISIBLE);
+            }
+        } catch (Throwable pvpErr) {
+            com.vortex.client.core.Errors.report("BlockRenderTypeMixin", pvpErr);
+        }
+    }
+}

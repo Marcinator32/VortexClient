@@ -1,0 +1,208 @@
+package com.vortex.client.command;
+
+import com.vortex.client.util.GameRestarter;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.minecraft.network.chat.Component;
+
+/**
+ * Eigene Client-Befehle (laufen nur lokal, gehen NICHT an den Server).
+ *
+ *   /relaunch    -- startet das Spiel neu
+ *   /reportcape  -- meldet das Cape-Bild eines Spielers (Freunde-Server)
+ */
+public final class ClientCommands {
+
+    private ClientCommands() {}
+
+    public static void register() {
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, access) -> {
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("relaunch")
+                    .executes(ctx -> {
+                        ctx.getSource().sendFeedback(
+                                Component.literal("Restarting game..."));
+                        try {
+                            GameRestarter.restart();
+                        } catch (Throwable t) {
+                            ctx.getSource().sendError(Component.literal(
+                                    "Restart failed: " + t));
+                        }
+                        return 1;
+                    }));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("reportcape")
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument("name",
+                            com.mojang.brigadier.arguments.StringArgumentType.word())
+                    .executes(ctx -> {
+                        String n = com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name");
+                        var mc = net.minecraft.client.Minecraft.getInstance();
+                        var info = mc.getConnection() == null ? null : mc.getConnection().getPlayerInfo(n);
+                        if (info == null) {
+                            ctx.getSource().sendError(Component.literal(n + " is not on this server."));
+                            return 0;
+                        }
+                        var src = ctx.getSource();
+                        com.vortex.client.social.Social.request("cosmetics.report", com.vortex.client.social.Social.args(
+                                "uuid", info.getProfile().id().toString().replace("-", ""))).whenComplete((r, e) ->
+                                src.sendFeedback(Component.literal(e == null
+                                        ? "Thanks -- the cape picture of " + n + " was reported."
+                                        : "Could not report: " + com.vortex.client.social.Social.errorOf(e))));
+                        return 1;
+                    })));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("friend")
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("add")
+                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument("name",
+                                com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .executes(ctx -> {
+                            String n = com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name");
+                            boolean neu = com.vortex.client.core.Friends.hinzu(n);
+                            com.vortex.client.core.ConfigManager.save();
+                            ctx.getSource().sendFeedback(Component.literal(
+                                    neu ? n + " is now your friend." : n + " already is your friend."));
+                            return 1;
+                        })))
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("remove")
+                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument("name",
+                                com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .executes(ctx -> {
+                            String n = com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "name");
+                            boolean weg = com.vortex.client.core.Friends.weg(n);
+                            com.vortex.client.core.ConfigManager.save();
+                            ctx.getSource().sendFeedback(Component.literal(
+                                    weg ? n + " removed from friends." : n + " was not on the list."));
+                            return 1;
+                        })))
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("list")
+                        .executes(ctx -> {
+                            var alle = com.vortex.client.core.Friends.alle();
+                            ctx.getSource().sendFeedback(Component.literal(alle.isEmpty()
+                                    ? "No friends yet. Middle-click a player or use /friend add <name>."
+                                    : "Friends (" + alle.size() + "): " + String.join(", ", alle)));
+                            return 1;
+                        })));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("export")
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument("name",
+                            com.mojang.brigadier.arguments.StringArgumentType.word())
+                    .executes(ctx -> {
+                        String name = com.mojang.brigadier.arguments.StringArgumentType
+                                .getString(ctx, "name");
+                        java.nio.file.Path p =
+                                com.vortex.client.core.ConfigManager.exportPreset(name);
+                        if (p != null) {
+                            ctx.getSource().sendFeedback(
+                                    Component.literal("Mod settings saved (no macros, waypoints or friends): " + p));
+                        } else {
+                            ctx.getSource().sendError(
+                                    Component.literal("Export failed."));
+                        }
+                        return 1;
+                    })));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("import")
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument("name",
+                            com.mojang.brigadier.arguments.StringArgumentType.word())
+                    .executes(ctx -> {
+                        String name = com.mojang.brigadier.arguments.StringArgumentType
+                                .getString(ctx, "name");
+                        if (com.vortex.client.core.ConfigManager.importPreset(name)) {
+                            ctx.getSource().sendFeedback(
+                                    Component.literal("Mod settings loaded: " + name));
+                        } else {
+                            ctx.getSource().sendError(
+                                    Component.literal("Not found. Available: "
+                                        + String.join(", ",
+                                            com.vortex.client.core.ConfigManager.listExports())));
+                        }
+                        return 1;
+                    })));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("wp")
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("add")
+                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument("name",
+                                com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .executes(ctx -> {
+                            var mc = net.minecraft.client.Minecraft.getInstance();
+                            if (mc.player == null) return 0;
+                            String name = com.mojang.brigadier.arguments.StringArgumentType
+                                    .getString(ctx, "name");
+                            com.vortex.client.waypoint.WaypointActions.addWaypoint(mc,
+                                    mc.player.getBlockX(), mc.player.getBlockY(),
+                                    mc.player.getBlockZ(), name,
+                                    com.vortex.client.waypoint.WaypointManager.Kind.ALLGEMEIN, false);
+                            ctx.getSource().sendFeedback(
+                                    Component.literal("Marker added: " + name));
+                            return 1;
+                        })))
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("del")
+                        .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.argument("name",
+                                com.mojang.brigadier.arguments.StringArgumentType.word())
+                        .executes(ctx -> {
+                            String name = com.mojang.brigadier.arguments.StringArgumentType
+                                    .getString(ctx, "name");
+                            boolean ok = com.vortex.client.waypoint.WaypointManager
+                                    .remove(name);
+                            com.vortex.client.core.ConfigManager.save();
+                            if (ok) {
+                                ctx.getSource().sendFeedback(
+                                        Component.literal("Removed: " + name));
+                            } else {
+                                ctx.getSource().sendError(
+                                        Component.literal("No marker with that name."));
+                            }
+                            return 1;
+                        })))
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("list")
+                        .executes(ctx -> {
+                            var hier = com.vortex.client.waypoint.WaypointWorlds.hier(
+                                    net.minecraft.client.Minecraft.getInstance(), true);
+                            var all = hier == null ? java.util.List.<com.vortex.client.waypoint.WaypointManager.Waypoint>of()
+                                    : com.vortex.client.waypoint.WaypointManager.inWelt(hier.welt().id, null);
+                            if (all.isEmpty()) {
+                                ctx.getSource().sendFeedback(
+                                        Component.literal("No waypoints in this world yet."));
+                                return 1;
+                            }
+                            StringBuilder sb = new StringBuilder("Waypoints in "
+                                    + com.vortex.client.waypoint.WaypointWorlds.anzeige(hier.welt()) + ":");
+                            for (var w : all) {
+                                sb.append("\n  ").append(w.name).append("  ")
+                                  .append(w.x).append(", ").append(w.y)
+                                  .append(", ").append(w.z);
+                            }
+                            ctx.getSource().sendFeedback(Component.literal(sb.toString()));
+                            return 1;
+                        })));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("lag")
+                    .executes(ctx -> {
+                        ctx.getSource().sendFeedback(Component.literal(
+                                com.vortex.client.core.Profiler.summary()));
+                        return 1;
+                    })
+                    .then(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("reset")
+                        .executes(ctx -> {
+                            com.vortex.client.core.Profiler.reset();
+                            ctx.getSource().sendFeedback(
+                                    Component.literal("Measurements reset."));
+                            return 1;
+                        })));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("errors")
+                    .executes(ctx -> {
+                        ctx.getSource().sendFeedback(Component.literal(
+                                com.vortex.client.core.Errors.summary()));
+                        return 1;
+                    }));
+
+            dispatcher.register(net.fabricmc.fabric.api.client.command.v2.ClientCommands.literal("presets")
+                    .executes(ctx -> {
+                        var list = com.vortex.client.core.ConfigManager.listExports();
+                        ctx.getSource().sendFeedback(Component.literal(
+                                list.isEmpty() ? "No exports found."
+                                               : "Exports: " + String.join(", ", list)));
+                        return 1;
+                    }));
+        });
+    }
+}

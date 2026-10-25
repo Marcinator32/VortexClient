@@ -1,0 +1,17 @@
+
+fabricApi {
+    configureTests {
+        createSourceSet = true
+        modId = "vortex-cosmetic-tests"
+        enableGameTests = false
+        enableClientGameTests = true
+        eula = true
+    }
+}
+
+sourceSets {
+    gametest {
+        compileClasspath += sourceSets.main.output + sourceSets.client.output
+        runtimeClasspath += sourceSets.main.output + sourceSets.client.output
+    }
+}

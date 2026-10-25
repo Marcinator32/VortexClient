@@ -1,0 +1,140 @@
+package com.vortex.client.gui;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Short descriptions shown in the module list.
+ *
+ * One sentence per module, plain and to the point: what it does, and -- where
+ * it matters -- how risky it is on a server. A description that only repeats
+ * the module name is worse than none at all, so each one adds something the
+ * name does not already say.
+ */
+public final class ModuleInfo {
+
+    private static final Map<String, String> DESCRIPTIONS = new HashMap<>();
+
+    static {
+        put("FPS", "Shows your current frame rate.");
+        put("Ping", "Your delay in milliseconds. A star means the figure came from the server and updates slowly.");
+        put("CPS", "Counts your clicks per second.");
+        put("Coordinates", "Shows your position and the direction you are facing.");
+        put("Potion Effects", "Lists your active effects and how long they last.");
+        put("ArmorHUD", "Shows your armour and its remaining durability.");
+        put("Totem Counter", "Shows how many totems you are carrying.");
+        put("Radar", "A small map of nearby players and mobs.");
+        put("AppleSkin", "Shows saturation and how much a food item will restore.");
+        put("Player List", "Lists nearby players with their distance.");
+        put("Keystrokes", "Shows which movement keys and mouse buttons you press.");
+        put("Totem Popper", "Counts how many totems the players around you have used.");
+        put("Session Stats", "Playtime, deaths, totems used and your best click rate.");
+        put("HUD Color", "Sets one shared colour for every HUD element at once.");
+        put("Hitboxes", "Draws the collision box around entities.");
+        put("Shield Status", "Colors shields by state: green = blocking, yellow = raising, red = broken by an axe.");
+        put("Toggle Sprint", "Keeps sprinting without holding the key.");
+        put("Health Indicator", "Shows an opponent's health above their head.");
+        put("Opponent Info", "A card in your HUD with the player you are fighting: head, health with absorption, armour and durability, held items, distance, ping, totem pops and who is ahead. Move it in the HUD editor.");
+        put("Target Info", "Shows an opponent's gear and whether they are in attack range.");
+        put("Projectile Path", "Previews where a pearl, potion or arrow will land.");
+        put("ESP", "Highlights mobs through walls.");
+        put("Block-ESP", "Highlights selected blocks, such as ores, through walls.");
+        put("Container ESP", "Highlights chests, barrels and shulker boxes.");
+        put("Spawner ESP", "Highlights monster spawners.");
+        put("Item ESP", "Highlights dropped items on the ground.");
+        put("Aimbot", "Aims at opponents automatically. Very high ban risk.");
+        put("Auto Hit", "Attacks automatically when a target is in range. Very high ban risk.");
+        put("Auto Totem", "Moves a totem into your off hand automatically. High ban risk.");
+        put("Fly", "Lets you fly. Detected almost immediately on most servers.");
+        put("Crystal Macro", "Places end crystals on obsidian and breaks them instantly. Extreme ban risk.");
+        put("Potato Mode", "One switch for weak PCs: lowers graphics, particles and menu blur, turns on every performance module below and pauses heavy effects. Your settings come back when you turn it off.");
+        put("Dynamic FPS", "Lowers the frame rate while the game is in the background or you are AFK. Full speed again the moment you are back.");
+        put("Entity Culling", "Skips mobs, carts and frames hidden behind walls. Players stay visible unless you say otherwise.");
+        put("Block Entity Distance", "Draws chests, signs, banners and heads only up to a set distance.");
+        put("Particle Limiter", "Keeps only part of all particles and caps spikes like TNT chains.");
+        put("Item Limiter", "Draws dropped items and XP orbs only up to a set distance. Picking them up still works.");
+        put("Debug Overlay", "A readable F3 in sections: FPS with 1% low and frame graph, position with nether coords and speed, biome, light, time, target, memory, server with ping and TPS.");
+        put("Item Counter", "Counts chosen items. Several displays, each with its own place and items.");
+        put("Armor Warning", "Says something before a piece of armour breaks, with a sound.");
+        put("Toggle Sneak", "Keeps you crouching without holding the key.");
+        put("Item Size", "Bigger dropped items on the ground: all, only valuables (totems, gapples, pearls ...) or the items you pick in Select items. Works with Item Physics.");
+        put("Crosshair", "Your own crosshair: 9 styles, colour or rainbow, target colour, dynamic gap, hit marker and attack indicator (bar, ring or percent).");
+        put("Chat", "Timestamps, a much longer history, and a key to copy it all.");
+        put("Nametags", "Size, transparency and range of the names above players.");
+        put("Zoom", "Hold a key and zoom with the wheel. The hotbar stays put while you do.");
+        put("Auto Reconnect", "Counts down on the disconnect screen and dials back in.");
+        put("No Render Blocks", "Hides the block types you pick, chests and signs included. Nothing else changes.");
+        put("Anti Render", "Hides selected entity types completely.");
+        put("Fullbright", "Brightens everything, no torches needed.");
+        put("No Particles", "Hides particle effects.");
+        put("Small Totem", "Shrinks the totem animation so it blocks less of the screen.");
+        put("No Pumpkin Blur", "Removes the overlay when wearing a carved pumpkin.");
+        put("Low Fire", "Lowers the flame overlay so you can still see while burning.");
+        put("Low Shield", "Moves the shield out of the way while blocking.");
+        put("No Fog", "Removes fog for a clearer view.");
+        put("Clear Water", "Removes the underwater tint.");
+        put("Clear Lava", "Makes lava see-through.");
+        put("Hand Item Size", "Resizes the item held in your hand.");
+        put("Freecam", "Detaches the camera and lets you fly around freely.");
+        put("Stash Finder", "Finds unusual accumulations of chests -- useful for locating bases.");
+        put("Sus Chunks", "Marks chunks that look suspicious based on their contents.");
+        put("Tunnel Detector", "Finds long straight tunnels that were dug by players.");
+        put("No Fall", "Prevents fall damage. High ban risk.");
+        put("Chunk Borders", "Shows the edges of the chunk you are standing in.");
+        put("Cooldown HUD", "Cooldowns as bars with seconds: ender pearl, wind charge, chorus fruit, goat horn, your shield after an axe hit and everything else with a cooldown.");
+        put("Inventory HUD", "Your inventory on screen, so you see totems, pearls and potions without pressing E.");
+        put("Light Level Overlay", "Marks spots where monsters can spawn: red = any time, yellow = only at night. Numbers style shows the block light.");
+        put("Chat Filter", "Highlights your name, friends and your own words (with a ping when someone mentions you), hides filtered words and stacks repeated lines as (x3). Words: /vchat highlight add <word>, /vchat filter add <word>.");
+        put("Sound Control", "Volume for single sounds in percent, 0 mutes. Anything not on a slider: /vsound recent, then /vsound set <id> <percent>.");
+        put("Better Tooltips", "Compact enchantments, food and saturation values, durability as a number and a map preview when you point at a map.");
+        put("Explosion Timer", "Countdown above lit TNT, TNT minecarts and hissing creepers. The creeper time is an estimate.");
+        put("Auto GG", "Says gg after a kill or at the end of a round. Own message per server: /autogg set <text> ({name} = opponent), /autogg default <text>.");
+        put("Damage Numbers", "Floating damage numbers above hit players and mobs. Calculated from the health the server sends -- servers that hide health show wrong or no numbers.");
+        put("Hit & Kill Effects", "Your own sound on every confirmed hit, plus a sound and an effect (lightning, totem, flames, hearts, blood ...) when you kill someone. Only you see and hear it.");
+        put("Pearl Tracker", "Shows where other players' ender pearls will land: line, marker and a note with name and distance. Some servers forbid this in their rules.");
+        put("Glint Customizer", "Colour (also gradient or rainbow), speed and strength of the enchantment glint on items and armour.");
+        put("Motion Blur", "Motion blur like in other PvP clients. Only the world is blurred, HUD and menus stay sharp. Costs a little performance.");
+        put("Speedometer", "How fast you are moving, in blocks per second or km/h.");
+        put("Mace HUD", "Your fall height and how much a mace hit would do to your target right now -- calculated like the server (smash bonus, Density, Breach, crit, armour, protection). Also shows the height you need for a kill.");
+        put("Compass Bar", "A compass strip along the top of the screen, like in survival games.");
+        put("Reach Display", "How far away your last hit landed, measured like the server does.");
+        put("Combo Counter", "Counts hits in a row without being hit back.");
+        put("TPS", "The server's ticks per second -- tells you whether the server or you is lagging.");
+        put("Clock", "Real time, the in-game day and memory use.");
+        put("Block Outline", "Your own outline around the block you look at: colour and thickness.");
+        put("Hit Color", "Your own colour for the flash when something takes damage.");
+        put("Scoreboard", "Move and resize the scoreboard, hide the red numbers.");
+        put("Boss Bar", "Move, resize and recolour boss bars, or draw slim bars of your own.");
+        put("Titles", "Move, shrink, recolour or hide the big titles in the middle of the screen.");
+        put("Time Changer", "Your own time of day and weather, only for you. Time of Day: fixed time, Custom Hour or your PC clock. Weather: clear, rain or thunder.");
+        put("Item Physics", "Dropped items lie flat on the ground instead of floating and spinning.");
+        put("Freelook", "Look around without changing where you walk. Some servers forbid it.");
+        put("Streamer Mode", "Hides your name, skin, the server address and your coordinates on screen.");
+        put("Friends", "Middle-click players to add them. Friends get their own colour and are spared by combat modules.");
+        put("Slot Lock", "Locked hotbar slots cannot be thrown away by accident.");
+    }
+
+    private ModuleInfo() {}
+
+    private static void put(String module, String description) {
+        DESCRIPTIONS.put(module, description);
+    }
+
+    /**
+     * Lets an addon supply descriptions for the modules it brings.
+     *
+     * Without this an addon's modules sit in the list with nothing under the
+     * name, which looks like an oversight rather than an addon. Addons call
+     * this once when they start.
+     */
+    public static void register(String module, String description) {
+        if (module == null || module.isEmpty()) return;
+        DESCRIPTIONS.put(module, (description == null) ? "" : description);
+    }
+
+    /** Description for a module, or an empty string if none is known. */
+    public static String get(String moduleName) {
+        String d = DESCRIPTIONS.get(moduleName);
+        return (d == null) ? "" : d;
+    }
+}

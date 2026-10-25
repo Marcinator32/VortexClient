@@ -1,0 +1,214 @@
+package com.vortex.client.hud;
+
+import com.vortex.client.core.Errors;
+import com.vortex.client.module.ModuleManager;
+import com.vortex.client.module.modules.AutoReconnectModule;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.DisconnectedScreen;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
+import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.client.multiplayer.resolver.ServerAddress;
+
+/**
+ * Counts down on the disconnect screen and dials back in.
+ *
+ * The countdown runs on the client tick rather than inside the screen, because
+ * DisconnectedScreen has no tick method of its own -- hooking one there would
+ * quietly do nothing.
+ *
+ * Which server to return to is remembered while you are still connected: once
+ * the disconnect screen is up, the client no longer knows where you were.
+ */
+public final class AutoReconnect {
+
+    /** The last server we were actually connected to. */
+    private static ServerData lastServer = null;
+
+    /** Ticks left before the next attempt, or -1 when nothing is pending. */
+    private static int ticksLeft = -1;
+
+    /** How many attempts have been made since the last successful connect. */
+    private static int tries = 0;
+
+    /** Ticks connected in one go (reset when the disconnect screen opens). */
+    private static int verbundenTicks = 0;
+
+    /** Set while the countdown is stopped by hand. */
+    private static boolean cancelled = false;
+
+    /** The button on the disconnect screen, so its label can be kept current. */
+    private static net.minecraft.client.gui.components.Button button = null;
+
+    public static void setButton(net.minecraft.client.gui.components.Button b) {
+        button = b;
+    }
+
+    private AutoReconnect() {}
+
+    private static AutoReconnectModule module() {
+        return ModuleManager.INSTANCE.get(AutoReconnectModule.class);
+    }
+
+    public static void register() {
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            try {
+                remember(client);
+                tick(client);
+            } catch (Throwable pvpErr) {
+                Errors.report("AutoReconnect", pvpErr);
+            }
+        });
+    }
+
+    /**
+     * Notes the current server while still connected.
+     *
+     * Has to happen here: by the time the disconnect screen appears the entry
+     * is gone, and there would be nothing left to reconnect to.
+     */
+    private static void remember(Minecraft client) {
+        if (client.level == null) return;
+        var entry = client.getCurrentServer();
+        if (entry != null) {
+            lastServer = entry;
+            if (++verbundenTicks >= 600) tries = 0;
+        }
+    }
+
+    /**
+     * Skips the next reconnect entirely.
+     *
+     * For a module that leaves on purpose -- Spawner Safer packs up and logs
+     * out precisely so as not to be there. Reconnecting straight afterwards
+     * would undo the whole point of it.
+     *
+     * Cleared once it has been used, so it only ever affects that one leave.
+     */
+    public static void suppressNext() {
+        suppressed = true;
+    }
+
+    /** Set by suppressNext, cleared on the next disconnect screen. */
+    private static boolean suppressed = false;
+
+    /** Called when the disconnect screen opens. */
+    public static void onDisconnected(DisconnectedScreen screen) {
+        verbundenTicks = 0;
+        cancelled = false;
+        ticksLeft = -1;
+
+        if (suppressed) {
+            suppressed = false;
+            return;
+        }
+
+        AutoReconnectModule mod = module();
+        if (mod == null || !mod.isEnabled()) return;
+        if (lastServer == null) return;
+
+        if (mod.skipKicks.get() && looksLikeAKick(screen)) {
+            return;
+        }
+        if (mod.attempts.getInt() > 0 && tries >= mod.attempts.getInt()) {
+            return;
+        }
+
+        ticksLeft = waitTicks(mod);
+    }
+
+    /**
+     * Guesses whether the server threw us out on purpose.
+     *
+     * A guess, and it says so: the reason is free text written by the server,
+     * in whatever language it likes. Common words are checked, nothing more.
+     * Getting it wrong costs a pointless reconnect attempt, which is why the
+     * check is allowed to be this rough.
+     */
+    private static boolean looksLikeAKick(DisconnectedScreen screen) {
+        try {
+            var info = ((com.vortex.client.mixin.client.DisconnectInfoAccessor) screen)
+                    .vortex$getInfo();
+            if (info == null) return false;
+            String reason = info.reason().getString().toLowerCase(java.util.Locale.ROOT);
+            String[] words = { "ban", "kick", "gebannt", "gekickt", "gesperrt",
+                               "suspend", "blacklist", "cheat" };
+            for (String w : words) {
+                if (reason.contains(w)) return true;
+            }
+            return false;
+        } catch (Throwable pvpErr) {
+            return false;
+        }
+    }
+
+    /** How long to wait before the next attempt, in ticks. */
+    private static int waitTicks(AutoReconnectModule mod) {
+        int seconds = mod.delay.getInt();
+        if (mod.backoff.get() && tries > 0) {
+            long grown = (long) seconds << Math.min(tries, 6);
+            seconds = (int) Math.min(grown, mod.maxDelay.getInt());
+        }
+        return Math.max(1, seconds) * 20;
+    }
+
+    /** Advances the countdown; connects when it runs out. */
+    public static void tick(Minecraft client) {
+        if (ticksLeft < 0 || cancelled) return;
+        if (!(client.gui.screen() instanceof DisconnectedScreen)) {
+            ticksLeft = -1;
+            return;
+        }
+
+        ticksLeft--;
+
+        if (button != null) {
+            button.setMessage(net.minecraft.network.chat.Component.literal(buttonLabel()));
+        }
+
+        if (ticksLeft > 0) return;
+
+        ticksLeft = -1;
+        connectNow(client);
+    }
+
+    /** Starts the connection attempt. */
+    public static void connectNow(Minecraft client) {
+        if (lastServer == null) return;
+        try {
+            tries++;
+            var parent = new JoinMultiplayerScreen(new TitleScreen());
+            ConnectScreen.startConnecting(parent, client,
+                    ServerAddress.parseString(lastServer.ip),
+                    lastServer, false, null);
+        } catch (Throwable pvpErr) {
+            Errors.report("AutoReconnect.connect", pvpErr);
+        }
+    }
+
+    /** Text for the button on the disconnect screen. */
+    public static String buttonLabel() {
+        if (lastServer == null) return "Reconnect";
+        if (cancelled || ticksLeft < 0) return "Reconnect now";
+        int seconds = (ticksLeft + 19) / 20;
+        return "Reconnecting in " + seconds + "s  (click to cancel)";
+    }
+
+    /** Button pressed: cancel a running countdown, otherwise connect at once. */
+    public static void buttonPressed() {
+        Minecraft client = Minecraft.getInstance();
+        if (ticksLeft > 0 && !cancelled) {
+            cancelled = true;
+            ticksLeft = -1;
+            return;
+        }
+        connectNow(client);
+    }
+
+    /** Is a countdown running? */
+    public static boolean isPending() {
+        return ticksLeft > 0 && !cancelled;
+    }
+}

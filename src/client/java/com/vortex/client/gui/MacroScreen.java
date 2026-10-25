@@ -1,0 +1,720 @@
+package com.vortex.client.gui;
+
+import com.vortex.client.macro.Macro;
+import com.vortex.client.macro.MacroManager;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.Component;
+
+/**
+ * Manages macros: record, edit, bind a key, play.
+ *
+ * Two panes. On the left the macros; on the right the steps of whichever is
+ * selected, each with its delay as a number you can type over. That is where
+ * the real work happens — recording gets the sequence roughly right, and the
+ * numbers make it exact.
+ */
+public class MacroScreen extends Screen {
+    /** Base height of the header; grows when the buttons wrap. */
+    private static final int HEADER_BASE_H = 62;
+
+    /** Actual header height for this frame. */
+    private int headerH = HEADER_BASE_H;
+    private static final int FOOTER_H = 24;
+    private static final int ROW_H = 22;
+    /** Width of the macro list. Worked out from the window width. */
+    private int listW = 210;
+
+    private static final int C_DIM    = VortexStyle.DIM;
+    private static final int C_WINDOW = VortexStyle.WINDOW;
+    private static final int C_BAR    = VortexStyle.BAR;
+    private static final int C_CARD   = VortexStyle.CARD;
+    private static final int C_HOV    = VortexStyle.HOV;
+    private static final int C_INNER  = VortexStyle.INNER;
+    private static final int C_LINE   = VortexStyle.LINE;
+
+    private final Screen parent;
+
+    private Macro selected = null;
+    private Macro renaming = null;
+    private Macro.Step editing = null;
+    private Macro bindingKey = null;
+    private Macro pendingDelete = null;
+
+    private EditBox nameField;
+    private EditBox valueField;
+
+    private String status = "";
+    private float openAnim = 0f;
+    private long lastNano = 0L;
+    private int mx = 0, my = 0;
+    private float scroll = 0f, scrollTarget = 0f;
+
+    private int winX, winY, winW, winH, listH;
+
+    private enum Act { BACK, NEW, PICK, RECORD, PLAY, TRIGGER, BIND, RENAME, DELETE,
+                       STEP_DELAY, STEP_HOLD, STEP_DEL, STEP_UP, STEP_DOWN,
+                       ADD_WAIT, JITTER, REPEAT, SPEED, START_DELAY, APPLY,
+                       SHARE, PASTE, COMMUNITY }
+
+    private static final class Hit {
+        final int x, y, w, h; final Act act; final Object data;
+        Hit(int x, int y, int w, int h, Act act, Object data) {
+            this.x = x; this.y = y; this.w = w; this.h = h; this.act = act; this.data = data;
+        }
+        boolean has(int px, int py) { return px >= x && px < x + w && py >= y && py < y + h; }
+    }
+    private final List<Hit> hits = new ArrayList<>();
+
+    public MacroScreen(Screen parent) {
+        super(Component.literal("Macros"));
+        this.parent = parent;
+    }
+
+    @Override
+    protected void init() {
+        winW = Math.min(this.width - 20, 720);
+        winH = Math.min(this.height - 20, 420);
+
+        listW = Math.min(Math.max(110, Math.min(210, winW / 3)),
+                         Math.max(60, winW - 120));
+        winX = (this.width - winW) / 2;
+        winY = (this.height - winH) / 2;
+        listH = winH - headerH - FOOTER_H;
+
+        nameField = new EditBox(this.font,
+                winX + 90, winY + winH - 18, 180, 14, Component.literal(""));
+        nameField.setBordered(false);
+        nameField.setMaxLength(32);
+        nameField.setVisible(false);
+        this.addRenderableWidget(nameField);
+
+        valueField = new EditBox(this.font,
+                winX + 90, winY + winH - 18, 90, 14, Component.literal(""));
+        valueField.setBordered(false);
+        valueField.setMaxLength(6);
+        valueField.setVisible(false);
+        this.addRenderableWidget(valueField);
+
+        if (selected == null && !MacroManager.all().isEmpty()) {
+            selected = MacroManager.all().get(0);
+        }
+    }
+
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor ctx, int mouseX, int mouseY, float delta) {
+        this.mx = mouseX;
+        this.my = mouseY;
+        hits.clear();
+
+        long now = System.nanoTime();
+        float dt = (lastNano == 0L) ? 0.016f : (now - lastNano) / 1_000_000_000.0f;
+        lastNano = now;
+        if (dt > 0.1f) dt = 0.1f;
+        openAnim += (1f - openAnim) * (1f - (float) Math.exp(-14f * dt));
+        scroll += (scrollTarget - scroll) * (1f - (float) Math.exp(-18f * dt));
+
+        captureBindKey();
+
+        ctx.fill(0, 0, this.width, this.height, fade(C_DIM, openAnim));
+        int accent = Theme.INSTANCE.accent.get() | 0xFF000000;
+
+        VortexStyle.schatten(ctx, winX, winY, winW, winH, openAnim);
+
+        roundRect(ctx, winX, winY, winW, winH, fade(C_WINDOW, openAnim));
+
+        VortexStyle.akzentLinie(ctx, winX + 4, winY, winW - 8, openAnim);
+        ctx.fill(winX, winY, winX + winW, winY + 1, fade(accent, openAnim));
+
+        drawHeader(ctx, accent);
+        listH = Math.max(40, winH - headerH - FOOTER_H);
+        drawList(ctx, accent);
+        drawSteps(ctx, accent);
+        drawFooter(ctx, accent);
+
+        if (nameField != null) { nameField.setX(winX + 90); nameField.setY(winY + winH - 18); }
+        if (valueField != null) { valueField.setX(winX + 144); valueField.setY(winY + winH - 18); }
+        super.extractRenderState(ctx, mouseX, mouseY, delta);
+    }
+
+    private void drawHeader(GuiGraphicsExtractor ctx, int accent) {
+        ctx.fill(winX, winY, winX + winW, winY + headerH, fade(C_BAR, openAnim));
+        ctx.fill(winX, winY + headerH - 1, winX + winW, winY + headerH, fade(C_LINE, openAnim));
+
+        boolean backHov = in(winX + 8, winY + 8, 16, 16);
+        ctx.text(this.font, Component.literal("<"),
+                winX + 12, winY + 12, backHov ? accent : 0xFF9A9AA6);
+        hits.add(new Hit(winX + 8, winY + 8, 16, 16, Act.BACK, null));
+
+        ctx.text(this.font, Component.literal("Macros"),
+                winX + 30, winY + 11, 0xFFFFFFFF);
+
+        String c = MacroManager.all().size() + " saved";
+        int cw = this.font.width(c);
+        ctx.text(this.font, Component.literal(c),
+                winX + winW - cw - 12, winY + 12, VortexStyle.TEXT_DIM, false);
+
+        int bx = winX + 12;
+        int by = winY + 32;
+        int right = winX + winW - 10;
+
+        int[] pos = { bx, by };
+        wrapButton(ctx, pos, right, "New macro", Act.NEW, null, accent, false);
+
+        if (selected != null) {
+            boolean rec = MacroManager.isRecording()
+                    && MacroManager.recordingMacro() == selected;
+            wrapButton(ctx, pos, right, rec ? "Stop recording" : "Record",
+                    Act.RECORD, selected, accent, rec);
+
+            boolean play = MacroManager.isPlaying() && MacroManager.playingMacro() == selected;
+            wrapButton(ctx, pos, right, play ? "Stop" : "Play",
+                    Act.PLAY, selected, accent, play);
+
+            wrapButton(ctx, pos, right, "Trigger: " + selected.trigger.label,
+                    Act.TRIGGER, selected, accent, false);
+
+            String keyLabel = "Key: " + (bindingKey == selected ? "press a key" : keyName(selected.key));
+            wrapButton(ctx, pos, right, keyLabel, Act.BIND, selected, accent,
+                    bindingKey == selected);
+
+            wrapButton(ctx, pos, right, "Copy", Act.SHARE, selected, accent, false);
+        }
+        wrapButton(ctx, pos, right, "Paste", Act.PASTE, null, accent, false);
+        wrapButton(ctx, pos, right, "Community", Act.COMMUNITY, null, accent, false);
+
+        headerH = (pos[1] + 20 + 8) - winY;
+    }
+
+    /**
+     * Draws a button and moves on, starting a new row when the width runs out.
+     *
+     * pos carries the current x and y between calls, which keeps the caller
+     * free of layout arithmetic.
+     */
+    private void wrapButton(GuiGraphicsExtractor ctx, int[] pos, int right, String label,
+                            Act act, Object data, int accent, boolean active) {
+        int w = this.font.width(label) + 16;
+        if (pos[0] + w > right && pos[0] > winX + 12) {
+            pos[0] = winX + 12;
+            pos[1] += 24;
+        }
+        button(ctx, pos[0], pos[1], label, act, data, accent, active);
+        pos[0] += w + 6;
+    }
+
+    private int button(GuiGraphicsExtractor ctx, int x, int y, String label, Act act,
+                       Object data, int accent, boolean active) {
+        int w = this.font.width(label) + 16;
+        boolean hov = in(x, y, w, 20);
+        int bg = active ? mix(C_INNER, accent, 0.5f) : (hov ? mix(C_INNER, accent, 0.3f) : C_INNER);
+        roundRect(ctx, x, y, w, 20, bg);
+        ctx.text(this.font, Component.literal(label), x + 8, y + 6, VortexStyle.TEXT, false);
+        hits.add(new Hit(x, y, w, 20, act, data));
+        return x + w + 6;
+    }
+
+    private void drawList(GuiGraphicsExtractor ctx, int accent) {
+        int x = winX + 8;
+        int y = winY + headerH + 6;
+        ctx.fill(winX + listW, winY + headerH, winX + listW + 1,
+                winY + headerH + listH, C_LINE);
+
+        if (MacroManager.all().isEmpty()) {
+            ctx.text(this.font, Component.literal("No macros yet"),
+                    x + 6, y + 6, 0xFF6A6A76, false);
+            return;
+        }
+
+        for (Macro m : MacroManager.all()) {
+            boolean sel = m == selected;
+            boolean hov = in(x, y, listW - 16, ROW_H);
+            roundRect(ctx, x, y, listW - 16, ROW_H,
+                    sel ? mix(C_CARD, accent, 0.28f) : (hov ? C_HOV : C_CARD));
+
+            String label = shorten(m.name, listW - 70);
+            ctx.text(this.font, Component.literal(label), x + 8, y + 3, 0xFFFFFFFF, false);
+            ctx.text(this.font, Component.literal(m.steps.size() + " steps"),
+                    x + 8, y + 12, VortexStyle.TEXT_DIM, false);
+
+            ctx.text(this.font, Component.literal("R"),
+                    x + listW - 44, y + 7, 0xFF9AD8FF, false);
+            ctx.text(this.font, Component.literal("x"),
+                    x + listW - 28, y + 7,
+                    pendingDelete == m ? 0xFFFF3030 : 0xFFFF7A7A, false);
+
+            hits.add(new Hit(x + listW - 46, y + 5, 14, 12, Act.RENAME, m));
+            hits.add(new Hit(x + listW - 30, y + 5, 14, 12, Act.DELETE, m));
+            hits.add(new Hit(x, y, listW - 50, ROW_H, Act.PICK, m));
+            y += ROW_H + 4;
+        }
+    }
+
+    private void drawSteps(GuiGraphicsExtractor ctx, int accent) {
+        int x = winX + listW + 12;
+        int w = winW - listW - 24;
+        int top = winY + headerH;
+
+        if (selected == null) {
+            ctx.text(this.font, Component.literal("Pick a macro on the left"),
+                    x, top + 10, 0xFF6A6A76, false);
+            return;
+        }
+
+        int bx = button(ctx, x, top + 6,
+                "Repeat: " + (selected.repeat == 0 ? "until stopped" : selected.repeat + "x"),
+                Act.REPEAT, selected, accent, false);
+        bx = button(ctx, bx, top + 6, "Speed: " + selected.speed + "%",
+                Act.SPEED, selected, accent, false);
+        bx = button(ctx, bx, top + 6, "Spread: " + selected.jitter + "%",
+                Act.JITTER, selected, accent, false);
+        bx = button(ctx, bx, top + 6, "Start: " + selected.startDelay + " ms",
+                Act.START_DELAY, selected, accent, false);
+        button(ctx, bx, top + 6, "+ wait", Act.ADD_WAIT, selected, accent, false);
+
+        int y = top + 32 - (int) scroll;
+        ctx.enableScissor(x, top + 30, x + w, top + listH);
+
+        if (selected.steps.isEmpty()) {
+            ctx.text(this.font,
+                    Component.literal("Empty. Press Record, do the sequence, press Stop."),
+                    x, y + 6, 0xFF6A6A76, false);
+        }
+
+        int i = 1;
+        for (Macro.Step step : new ArrayList<>(selected.steps)) {
+            if (y + ROW_H >= top + 30 && y <= top + listH) {
+                boolean hov = in(x, y, w, ROW_H);
+                roundRect(ctx, x, y, w, ROW_H, hov ? C_HOV : C_CARD);
+
+                ctx.text(this.font, Component.literal(String.valueOf(i)),
+                        x + 7, y + 7, 0xFF5A5A66, false);
+                ctx.text(this.font, Component.literal(step.describe()),
+                        x + 26, y + 7, VortexStyle.TEXT, false);
+
+                String d = step.delay + " ms";
+                int dw = this.font.width(d);
+                int dx = x + w - dw - 118;
+                roundRect(ctx, dx - 5, y + 4, dw + 10, 14,
+                        editing == step ? mix(C_INNER, accent, 0.45f) : C_INNER);
+                ctx.text(this.font, Component.literal(d), dx, y + 7, VortexStyle.TEXT, false);
+                hits.add(new Hit(dx - 5, y + 4, dw + 10, 14, Act.STEP_DELAY, step));
+
+                if (step.action == Macro.Action.KEY) {
+                    String h = step.hold + " ms";
+                    int hw = this.font.width(h);
+                    int hx = x + w - hw - 62;
+                    roundRect(ctx, hx - 5, y + 4, hw + 10, 14, C_INNER);
+                    ctx.text(this.font, Component.literal(h), hx, y + 7, VortexStyle.TEXT, false);
+                    hits.add(new Hit(hx - 5, y + 4, hw + 10, 14, Act.STEP_HOLD, step));
+                }
+
+                ctx.text(this.font, Component.literal("^"), x + w - 44, y + 7, 0xFF9A9AA6, false);
+                ctx.text(this.font, Component.literal("v"), x + w - 30, y + 7, 0xFF9A9AA6, false);
+                ctx.text(this.font, Component.literal("x"), x + w - 16, y + 7, 0xFFFF7A7A, false);
+                hits.add(new Hit(x + w - 46, y + 5, 12, 12, Act.STEP_UP, step));
+                hits.add(new Hit(x + w - 32, y + 5, 12, 12, Act.STEP_DOWN, step));
+                hits.add(new Hit(x + w - 18, y + 5, 12, 12, Act.STEP_DEL, step));
+            }
+            y += ROW_H + 3;
+            i++;
+        }
+        ctx.disableScissor();
+    }
+
+    private void drawFooter(GuiGraphicsExtractor ctx, int accent) {
+        int fy = winY + winH - FOOTER_H;
+        ctx.fill(winX, fy, winX + winW, winY + winH, fade(C_BAR, openAnim));
+        ctx.fill(winX, fy, winX + winW, fy + 1, fade(C_LINE, openAnim));
+
+        boolean editingSomething = renaming != null || editing != null
+                || editingMacroField != null;
+        if (editingSomething) {
+            String label = (renaming != null) ? "Name:"
+                    : (editingMacroField == Act.REPEAT) ? "Repeats (0 = endless):"
+                    : (editingMacroField == Act.SPEED) ? "Speed in %:"
+                    : (editingMacroField == Act.JITTER) ? "Spread in %:"
+                    : (editingMacroField == Act.START_DELAY) ? "Start delay in ms:"
+                    : "Milliseconds:";
+            ctx.text(this.font, Component.literal(label),
+                    winX + 12, fy + 8, VortexStyle.TEXT, false);
+            int fieldX = winX + (renaming != null ? 86 : 140);
+            roundRect(ctx, fieldX, fy + 4, renaming != null ? 188 : 90, 16, C_INNER);
+            String ok = "Apply";
+            int okw = this.font.width(ok) + 14;
+            int oxx = fieldX + (renaming != null ? 196 : 98);
+            boolean hov = in(oxx, fy + 4, okw, 16);
+            roundRect(ctx, oxx, fy + 4, okw, 16, hov ? mix(C_INNER, accent, 0.45f) : C_INNER);
+            ctx.text(this.font, Component.literal(ok), oxx + 7, fy + 8, 0xFFFFFFFF, false);
+            hits.add(new Hit(oxx, fy + 4, okw, 16, Act.APPLY, null));
+            return;
+        }
+
+        String hint = status.isEmpty()
+                ? "Record captures clicks, keys and hotbar switches with their timing"
+                : status;
+        ctx.text(this.font, Component.literal(shorten(hint, winW - 24)),
+                winX + 12, fy + 8, status.isEmpty() ? VortexStyle.TEXT_DIM : VortexStyle.TEXT, false);
+    }
+
+    /** While waiting for a binding, the next key pressed is taken. */
+    private void captureBindKey() {
+        if (bindingKey == null) return;
+        Minecraft mc = Minecraft.getInstance();
+        if (com.mojang.blaze3d.platform.InputConstants.isKeyDown(
+                mc.getWindow(), org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE)) {
+            bindingKey.key = org.lwjgl.glfw.GLFW.GLFW_KEY_UNKNOWN;
+            bindingKey = null;
+            save();
+            status = "Key cleared.";
+            return;
+        }
+        for (int code = org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE;
+             code <= org.lwjgl.glfw.GLFW.GLFW_KEY_LAST; code++) {
+            if (com.mojang.blaze3d.platform.InputConstants.isKeyDown(mc.getWindow(), code)) {
+                bindingKey.key = code;
+                bindingKey = null;
+                save();
+                return;
+            }
+        }
+        for (int b = 2; b <= 7; b++) {
+            if (MacroManager.isDown(mc, MacroManager.MOUSE_BASE + b)) {
+                bindingKey.key = MacroManager.MOUSE_BASE + b;
+                bindingKey = null;
+                save();
+                return;
+            }
+        }
+    }
+
+    @Override
+    public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent click, boolean doubled) {
+        if (super.mouseClicked(click, doubled)) return true;
+
+        for (int i = hits.size() - 1; i >= 0; i--) {
+            Hit h = hits.get(i);
+            if (!h.has(mx, my)) continue;
+            switch (h.act) {
+                case BACK:
+                    this.onClose();
+                    return true;
+                case NEW:
+                    selected = MacroManager.create(null);
+                    save();
+                    status = "Created. Press Record and do the sequence.";
+                    return true;
+                case PICK:
+                    selected = (Macro) h.data;
+                    scroll = 0f; scrollTarget = 0f;
+                    return true;
+                case RECORD: {
+                    Macro m = (Macro) h.data;
+                    if (MacroManager.isRecording() && MacroManager.recordingMacro() == m) {
+                        MacroManager.stopRecording();
+                        save();
+                        status = m.steps.size() + " steps recorded.";
+                    } else {
+                        MacroManager.startRecording(m);
+                        Minecraft.getInstance().gui.setScreen(null);
+                    }
+                    return true;
+                }
+                case PLAY:
+                    MacroManager.toggle((Macro) h.data);
+                    return true;
+                case TRIGGER: {
+                    Macro m = (Macro) h.data;
+                    Macro.Trigger[] all = Macro.Trigger.values();
+                    m.trigger = all[(m.trigger.ordinal() + 1) % all.length];
+                    save();
+                    return true;
+                }
+                case REPEAT:
+                case SPEED:
+                case START_DELAY: {
+                    clearInputs();
+                    editingMacroField = h.act;
+                    editingMacro = (Macro) h.data;
+                    if (valueField != null) {
+                        int cur = (h.act == Act.REPEAT) ? editingMacro.repeat
+                                : (h.act == Act.SPEED) ? editingMacro.speed
+                                : editingMacro.startDelay;
+                        valueField.setValue(String.valueOf(cur));
+                        valueField.setVisible(true);
+                        this.setFocused(valueField);
+                    }
+                    return true;
+                }
+                case BIND:
+                    bindingKey = (Macro) h.data;
+                    return true;
+                case RENAME: {
+                    Macro m = (Macro) h.data;
+                    clearInputs();
+                    renaming = m;
+                    if (nameField != null) {
+                        nameField.setValue(m.name);
+                        nameField.setVisible(true);
+                        this.setFocused(nameField);
+                    }
+                    return true;
+                }
+                case DELETE: {
+                    Macro m = (Macro) h.data;
+                    if (pendingDelete != m) {
+                        pendingDelete = m;
+                        status = "Click x again to delete \"" + m.name + "\".";
+                        return true;
+                    }
+                    MacroManager.remove(m);
+                    if (selected == m) selected = null;
+                    pendingDelete = null;
+                    save();
+                    status = "Deleted.";
+                    return true;
+                }
+                case STEP_DELAY:
+                case STEP_HOLD: {
+                    Macro.Step s = (Macro.Step) h.data;
+                    clearInputs();
+                    editing = s;
+                    editingHold = (h.act == Act.STEP_HOLD);
+                    if (valueField != null) {
+                        valueField.setValue(String.valueOf(editingHold ? s.hold : s.delay));
+                        valueField.setVisible(true);
+                        this.setFocused(valueField);
+                    }
+                    return true;
+                }
+                case STEP_DEL:
+                    if (selected != null) {
+                        selected.steps.remove((Macro.Step) h.data);
+                        save();
+                    }
+                    return true;
+                case STEP_UP:
+                case STEP_DOWN: {
+                    if (selected == null) return true;
+                    int idx = selected.steps.indexOf((Macro.Step) h.data);
+                    int to = idx + (h.act == Act.STEP_UP ? -1 : 1);
+                    if (idx >= 0 && to >= 0 && to < selected.steps.size()) {
+                        Macro.Step s = selected.steps.remove(idx);
+                        selected.steps.add(to, s);
+                        save();
+                    }
+                    return true;
+                }
+                case ADD_WAIT:
+                    if (selected != null) {
+                        selected.steps.add(new Macro.Step(Macro.Action.WAIT, 0, 200, 0));
+                        save();
+                    }
+                    return true;
+                case JITTER:
+                    if (selected != null) {
+                        clearInputs();
+                        editingMacroField = Act.JITTER;
+                        editingMacro = selected;
+                        if (valueField != null) {
+                            valueField.setValue(String.valueOf(selected.jitter));
+                            valueField.setVisible(true);
+                            this.setFocused(valueField);
+                        }
+                    }
+                    return true;
+                case SHARE: {
+                    Macro m = (Macro) h.data;
+                    Minecraft.getInstance().keyboardHandler.setClipboard(
+                            MacroManager.export(m));
+                    status = "Copied. Send it to a friend, they press Paste.";
+                    return true;
+                }
+                case PASTE: {
+                    String text = Minecraft.getInstance().keyboardHandler.getClipboard();
+                    Macro m = MacroManager.importFrom(text);
+                    if (m == null) {
+                        status = "Clipboard holds no Vortex macro.";
+                    } else {
+                        selected = m;
+                        save();
+                        status = "Imported: " + m.name;
+                    }
+                    return true;
+                }
+                case COMMUNITY:
+                    Minecraft.getInstance().gui.setScreen(new CommunityScreen(this));
+                    return true;
+                case APPLY:
+                    applyInput();
+                    return true;
+                default:
+                    break;
+            }
+        }
+        return false;
+    }
+
+    private boolean editingHold = false;
+
+    /** Which macro-wide number is being typed, and for which macro. */
+    private Act editingMacroField = null;
+    private Macro editingMacro = null;
+
+    private void clearInputs() {
+        renaming = null;
+        editing = null;
+        editingMacroField = null;
+        editingMacro = null;
+        if (nameField != null) nameField.setVisible(false);
+        if (valueField != null) valueField.setVisible(false);
+    }
+
+    private void applyInput() {
+        if (editingMacroField != null && editingMacro != null && valueField != null) {
+            try {
+                int v = Integer.parseInt(valueField.getValue().trim());
+                switch (editingMacroField) {
+                    case REPEAT:
+                        editingMacro.repeat = Math.max(0, Math.min(9999, v));
+                        status = v == 0 ? "Repeats until stopped." : "Repeats " + v + " times.";
+                        break;
+                    case SPEED:
+                        editingMacro.speed = Math.max(10, Math.min(400, v));
+                        status = "Speed " + editingMacro.speed + "%.";
+                        break;
+                    case JITTER:
+                        editingMacro.jitter = Math.max(0, Math.min(50, v));
+                        status = "Spread " + editingMacro.jitter + "%.";
+                        break;
+                    case START_DELAY:
+                        editingMacro.startDelay = Math.max(0, Math.min(10_000, v));
+                        status = "Start delay " + editingMacro.startDelay + " ms.";
+                        break;
+                    default:
+                        break;
+                }
+            } catch (NumberFormatException e) {
+                status = "Enter a whole number.";
+                return;
+            }
+            clearInputs();
+            save();
+            return;
+        }
+
+        if (renaming != null && nameField != null) {
+            String n = nameField.getValue().trim();
+            if (n.isEmpty()) {
+                status = "Name cannot be empty.";
+                return;
+            }
+            renaming.name = n;
+            status = "Renamed.";
+        } else if (editing != null && valueField != null) {
+            try {
+                int v = Integer.parseInt(valueField.getValue().trim());
+                v = Math.max(0, Math.min(60_000, v));
+                if (editingHold) editing.hold = v; else editing.delay = v;
+                status = "Updated.";
+            } catch (NumberFormatException e) {
+                status = "Enter a whole number of milliseconds.";
+                return;
+            }
+        }
+        clearInputs();
+        save();
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY,
+                                 double horizontal, double vertical) {
+        if (selected == null) return true;
+        int content = selected.steps.size() * (ROW_H + 3) + 40;
+        scrollTarget -= (float) vertical * 30f;
+        float max = Math.max(0f, content - listH);
+        if (scrollTarget < 0f) scrollTarget = 0f;
+        if (scrollTarget > max) scrollTarget = max;
+        return true;
+    }
+
+    private void save() {
+        com.vortex.client.core.ConfigManager.save();
+    }
+
+    private static String keyName(int code) {
+        if (code == org.lwjgl.glfw.GLFW.GLFW_KEY_UNKNOWN) return "none";
+        if (MacroManager.isMouse(code)) {
+            return "Mouse " + (code - MacroManager.MOUSE_BASE + 1);
+        }
+        try {
+            return com.mojang.blaze3d.platform.InputConstants.Type.KEYSYM
+                    .getOrCreate(code).getDisplayName().getString().toUpperCase();
+        } catch (Throwable pvpErr) {
+            return "none";
+        }
+    }
+
+    private String shorten(String s, int maxW) {
+        if (this.font.width(s) <= maxW) return s;
+        String cur = s;
+        while (cur.length() > 1 && this.font.width(cur + "..") > maxW) {
+            cur = cur.substring(0, cur.length() - 1);
+        }
+        return cur + "..";
+    }
+
+    private boolean in(int x, int y, int w, int h) {
+        return mx >= x && mx < x + w && my >= y && my < y + h;
+    }
+
+    private void roundRect(GuiGraphicsExtractor ctx, int x, int y, int w, int h, int color) {
+        if (w <= 0 || h <= 0) return;
+        ctx.fill(x + 1, y, x + w - 1, y + h, color);
+        ctx.fill(x, y + 1, x + 1, y + h - 1, color);
+        ctx.fill(x + w - 1, y + 1, x + w, y + h - 1, color);
+    }
+
+    private static int fade(int argb, float f) {
+        if (f >= 1f) return argb;
+        if (f <= 0f) return argb & 0x00FFFFFF;
+        return ((int) (((argb >>> 24) & 0xFF) * f) << 24) | (argb & 0x00FFFFFF);
+    }
+
+    private static int mix(int a, int b, float t) {
+        if (t < 0f) t = 0f;
+        if (t > 1f) t = 1f;
+        int aa = (a >>> 24) & 0xFF, ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+        int ba = (b >>> 24) & 0xFF, br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+        return (((int) (aa + (ba - aa) * t)) << 24)
+                | (((int) (ar + (br - ar) * t)) << 16)
+                | (((int) (ag + (bg - ag) * t)) << 8)
+                | ((int) (ab + (bb - ab) * t));
+    }
+
+    /**
+     * Escape must not close the screen while a key is being assigned.
+     *
+     * Same trap as in the main menu: Minecraft closes on Escape before the
+     * clearing can happen, so the binding never went away.
+     */
+    @Override
+    public boolean shouldCloseOnEsc() {
+        return bindingKey == null;
+    }
+
+    @Override
+    public boolean isPauseScreen() {
+        return false;
+    }
+
+    @Override
+    public void onClose() {
+        save();
+        this.minecraft.gui.setScreen(parent);
+    }
+}

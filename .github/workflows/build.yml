@@ -1,0 +1,269 @@
+name: build
+
+# Runs on every push and pull request.
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths-ignore: [ "**.md", "docs/**" ]
+  workflow_dispatch:   # allows starting a run manually from the Actions tab
+
+# Mehrere Pushes kurz hintereinander: einer laeuft, nur der neueste wartet (die
+# dazwischen fallen weg). Laufende Builds werden nicht abgebrochen -- sie veroeffentlichen.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+# contents: write -- noetig, damit die fertige Jar als Release
+# veroeffentlicht werden kann (siehe letzter Schritt).
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # ganze Historie + Tags: "Was ist neu" seit der letzten Version
+
+      # JDK 25 -- Minecraft 26.x requires Java 25.
+      # build.gradle setzt VERSION_25; mit JDK 21 bricht der Compiler mit
+      # "release version 25 not supported" ab.
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      # Caches Gradle and the downloaded Minecraft files.
+      #
+      # This is not only about speed: once Minecraft is cached, a build no
+      # longer fails just because a download source is briefly unreachable.
+      # That is exactly what broke an earlier run.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', 'gradle.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      # Up to three attempts.
+      #
+      # Setup downloads Minecraft, mappings and the loader from external
+      # servers (Mojang and FabricMC). If those are briefly unreachable the
+      # build fails even though nothing is wrong with the code, and a retry
+      # is enough. A real error in the code fails all three attempts alike,
+      # and --stacktrace then shows the exact cause.
+      - name: Build
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            echo "=== Build attempt $attempt of 3 ==="
+            if ./gradlew build --no-daemon --stacktrace 2>&1 | tee build.log; test ${PIPESTATUS[0]} -eq 0; then
+              echo "Build succeeded."
+              exit 0
+            fi
+            # Compiler-Fehler als Anmerkungen (sichtbar ohne das ganze Log)
+            grep -A3 -E '^/.*\.java:[0-9]+: error: ' build.log | head -60 | sed 's/^/::error::/' || true
+            grep -A6 'What went wrong' build.log | head -14 | sed 's/^/::error::/' || true
+            if [ "$attempt" -lt 3 ]; then
+              echo "Failed -- waiting 20 seconds before retrying."
+              sleep 20
+            fi
+          done
+          echo "All three attempts failed."
+          exit 1
+
+      # ---------------------------------------------------------------
+      # WEITERE FASSUNGEN: Minecraft 26.1.1 und 26.1.2, noch mit JDK 25.
+      # Regeln in port/26.1.1 (26.1.2 uebernimmt sie ueber port/26.1.2/basis).
+      # Scheitert eine, werden die anderen trotzdem gebaut und veroeffentlicht.
+      # ---------------------------------------------------------------
+      - name: Build 26.1.x
+        id: port261
+        continue-on-error: true
+        run: |
+          FAIL=""
+          for V in 26.1.1 26.1.2; do
+            python3 tools/port.py "$V" "build-port/$V" || { FAIL="$FAIL $V"; continue; }
+            ok=""
+            for attempt in 1 2 3; do
+              echo "=== $V build attempt $attempt of 3 ==="
+              if ( cd "build-port/$V" && chmod +x gradlew && ./gradlew build --no-daemon --stacktrace ) 2>&1 | tee "build-port/$V/build.log"; test ${PIPESTATUS[0]} -eq 0; then
+                echo "$V build succeeded."; ok=1; break
+              fi
+              grep -A3 -E '^/.*\.java:[0-9]+: error: ' "build-port/$V/build.log" | head -60 | sed "s/^/::error::[$V] /" || true
+              grep -A6 'What went wrong' "build-port/$V/build.log" | head -14 | sed "s/^/::error::[$V] /" || true
+              [ "$attempt" -lt 3 ] && sleep 20
+            done
+            [ -n "$ok" ] || { FAIL="$FAIL $V"; rm -rf "build-port/$V/build/libs"; }
+          done
+          [ -z "$FAIL" ] || { echo "::error::Nicht gebaut:$FAIL"; exit 1; }
+
+      # ---------------------------------------------------------------
+      # ZWEITE FASSUNG: Minecraft 1.21.11 (4.12.0)
+      #
+      # tools/port.py erzeugt aus DIESEM Quelltext die 1.21.11-Fassung
+      # (Regeln in port/1.21.11). Scheitert sie, wird die 26.2-Jar trotzdem
+      # veroeffentlicht -- die Fehler stehen als Anmerkungen am Lauf.
+      # ---------------------------------------------------------------
+      - name: Set up JDK 21 (fuer 1.21.11)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      - name: Build 1.21.11
+        id: port
+        continue-on-error: true
+        run: |
+          set -e
+          python3 tools/port.py 1.21.11 build-port/1.21.11
+          cd build-port/1.21.11
+          chmod +x gradlew
+          for attempt in 1 2 3; do
+            echo "=== 1.21.11 build attempt $attempt of 3 ==="
+            if ./gradlew build --no-daemon --stacktrace 2>&1 | tee build.log; test ${PIPESTATUS[0]} -eq 0; then
+              echo "1.21.11 build succeeded."
+              exit 0
+            fi
+            grep -A3 -E '^/.*\.java:[0-9]+: error: ' build.log | head -60 | sed 's/^/::error::[1.21.11] /' || true
+            grep -A6 'What went wrong' build.log | head -14 | sed 's/^/::error::[1.21.11] /' || true
+            [ "$attempt" -lt 3 ] && sleep 20
+          done
+          exit 1
+
+      # ---------------------------------------------------------------
+      # 1.8.9 (Legacy Fabric, Ordner legacy/): eigener Quelltext (Java 8),
+      # gleiche Versionsnummer wie der Client. Landet im selben Release.
+      # ---------------------------------------------------------------
+      - name: Build 1.8.9
+        id: legacy
+        continue-on-error: true
+        run: |
+          set -e
+          VERSION=$(grep '^mod_version=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          VERSION="${VERSION%%+*}"   # "4.25.0+26.2" -> "4.25.0"
+          cd legacy
+          chmod +x gradlew
+          for attempt in 1 2 3; do
+            echo "=== 1.8.9 build attempt $attempt of 3 ==="
+            if ./gradlew build -Pmod_version="$VERSION" --no-daemon --stacktrace 2>&1 | tee build.log; test ${PIPESTATUS[0]} -eq 0; then
+              mkdir -p ../build-port/1.8.9/build/libs
+              cp $(ls build/libs/*.jar | grep -v -- '-sources') ../build-port/1.8.9/build/libs/
+              echo "1.8.9 build succeeded."
+              exit 0
+            fi
+            grep -A3 -E '^/.*\.java:[0-9]+: error: ' build.log | head -60 | sed 's/^/::error::[1.8.9] /' || true
+            grep -A6 'What went wrong' build.log | head -14 | sed 's/^/::error::[1.8.9] /' || true
+            [ "$attempt" -lt 3 ] && sleep 20
+          done
+          exit 1
+
+      # Die fertige Jar als Release veroeffentlichen.
+      #
+      # WARUM NICHT (NUR) ALS ARTIFACT: Artifacts zaehlen gegen ein
+      # Speicherlimit des ganzen GitHub-Kontos. Ist es voll, bricht der
+      # Upload mit "Artifact storage quota has been hit" ab -- obwohl der
+      # Build geklappt hat. Releases zaehlen nicht dazu.
+      #
+      # Ein Release je Version (Tag v<mod_version>). Wird dieselbe Version
+      # noch einmal gebaut, ersetzt die neue Jar die alte (--clobber).
+      # Zu finden auf der Repo-Startseite rechts unter "Releases".
+      # Notizen aelterer Releases im neuen Format ("## Titel", "- Punkt")
+      # nachtragen -- die Beta-Checkliste im Launcher liest sie von dort.
+      - name: Release-Notizen nachtragen
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in .github/release-notes/*.md; do
+            [ -f "$f" ] || continue
+            t=$(basename "$f" .md)
+            gh release edit "$t" --notes-file "$f" >/dev/null 2>&1 && echo "Notizen: $t" || echo "::warning::Notizen fuer $t nicht gesetzt"
+          done
+      - name: Publish JAR as release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |
+          set -e
+          VERSION=$(grep '^mod_version=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+          TAG="v${VERSION}"
+          # Loom erzeugt mehrere Jars; die ohne "-sources" ist die Mod.
+          JAR=$(ls build/libs/*.jar | grep -v -- '-sources' | head -n 1)
+          # Weitere Fassungen (1.21.11, 26.1.1 -- falls gebaut) kommen ins selbe Release
+          PORTJARS=$(ls build-port/*/build/libs/*.jar 2>/dev/null | grep -v -- '-sources' || true)
+          echo "Jar: $JAR $PORTJARS ->  Release $TAG"
+          # "Was ist neu" fuer die Spieler: die Commit-Nachrichten dieses Pushs
+          # (ohne technische Zeilen). Der Launcher zeigt sie nach dem Update an.
+          export TAG
+          python3 - > "$RUNNER_TEMP/notes.md" <<'PY'
+          import json, os, re, subprocess
+          try:
+              commits = json.loads(os.environ.get("COMMITS") or "null") or []
+          except Exception:
+              commits = []
+          # Alle Commits seit der letzten ANDEREN Version -- so gehen die
+          # Neuerungen nicht verloren, wenn dieselbe Version nachgebaut wird.
+          tag = os.environ.get("TAG", "")
+          git = lambda *a: subprocess.run(["git", *a], capture_output=True, text=True).stdout
+          prev = [t for t in git("tag", "--merged", "HEAD", "--sort=-creatordate").split() if t.startswith("v") and t != tag]
+          msgs = []
+          if prev:
+              msgs = [m for m in git("log", f"{prev[0]}..HEAD", "--pretty=%B%x00").split("\x00") if m.strip()]
+          msgs = msgs or [c.get("message", "") for c in commits] or [git("log", "-1", "--pretty=%B")]
+          # FORMAT (fuer "Was ist neu" und die Beta-Checkliste im Launcher):
+          #   "## Betreff"  -- Ueberschrift, wenn der Commit Detailzeilen hat
+          #   "- Punkt"     -- ein Punkt = ein Eintrag zum Abhaken
+          # CI-, Merge- und Revert-Commits fallen ganz heraus.
+          tech = re.compile(r"(?i)^(co-authored-by|claude-session|signed-off-by|add files via upload)")
+          lines = []
+          for m in msgs:
+              rows = []
+              for l in m.splitlines():
+                  l = l.strip()
+                  if not l or "claude.ai/code" in l or tech.match(l) or "[skip ci]" in l:
+                      continue
+                  rows.append(l)
+              if not rows or re.match(r"(?i)^(ci:|merge |revert )", rows[0]):
+                  continue
+              subject, rest = rows[0].lstrip("-* ").strip(), rows[1:]
+              if rest:
+                  lines.append("## " + subject)
+                  # Hat der Commit Spiegelstriche, sind Zeilen OHNE Strich Zwischentitel
+                  # ("Stash Finder", "Sus Chunks") -- keine Punkte zum Abhaken.
+                  strich = any(r.startswith(("-", "*")) for r in rest)
+                  for r in rest:
+                      if strich and not r.startswith(("-", "*")):
+                          lines.append("## " + subject + " \u2013 " + r.rstrip(":"))
+                      else:
+                          lines.append("- " + r.lstrip("-* ").strip())
+              else:
+                  lines.append("- " + subject)
+          print("\n".join(dict.fromkeys(lines)) or "- Verbesserungen und Fehlerbehebungen")
+          PY
+          cat "$RUNNER_TEMP/notes.md"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Vortex Client $VERSION" \
+              --notes-file "$RUNNER_TEMP/notes.md" --target "${GITHUB_SHA}"
+          else
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release upload "$TAG" "$JAR" $PORTJARS --clobber
+
+      # Zusaetzlich als Artifact, aber nur 3 Tage aufbewahrt und ohne den
+      # Build scheitern zu lassen, wenn das Speicherlimit erreicht ist.
+      - name: Upload JAR (artifact, optional)
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: vortexclient-jar
+          path: build/libs/*.jar
+          retention-days: 3

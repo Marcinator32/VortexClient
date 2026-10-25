@@ -1,0 +1,29 @@
+{
+  "providers": [
+    {
+      "type": "ttf",
+      "file": "vortexclient:inter-bold.ttf",
+      "size": 22.0,
+      "oversample": 4.0,
+      "shift": [
+        0,
+        10
+      ]
+    },
+    {
+      "type": "reference",
+      "id": "minecraft:include/space"
+    },
+    {
+      "type": "reference",
+      "id": "minecraft:include/default",
+      "filter": {
+        "uniform": false
+      }
+    },
+    {
+      "type": "reference",
+      "id": "minecraft:include/unifont"
+    }
+  ]
+}

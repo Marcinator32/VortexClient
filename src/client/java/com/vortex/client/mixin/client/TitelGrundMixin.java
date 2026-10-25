@@ -1,0 +1,34 @@
+package com.vortex.client.mixin.client;
+
+import com.vortex.client.gui.glatt.MenuStil;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.network.chat.Component;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+/** Hauptmenue: ruhiger Verlauf ueber dem Panorama, die Vortex-Leiste und dein Charakter, unter den Knoepfen (siehe TitelStil, TitelFigur). */
+@Mixin(TitleScreen.class)
+public abstract class TitelGrundMixin extends Screen {
+
+    protected TitelGrundMixin(Component title) {
+        super(title);
+    }
+
+    @Inject(method = "extractRenderState",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/screens/Screen;extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;IIF)V"),
+            require = 0)
+    private void vortex$grund(GuiGraphicsExtractor ctx, int mx, int my, float delta, CallbackInfo ci) {
+        try {
+            if (MenuStil.titel()) {
+                com.vortex.client.gui.menu.TitelStil.grund(ctx, this.width, this.height);
+                com.vortex.client.cosmetics.TitelFigur.zeichnen(ctx, this.width, this.height, mx, my);
+            }
+        } catch (Throwable t) {
+            com.vortex.client.core.Errors.report("TitelGrund", t);
+        }
+    }
+}
